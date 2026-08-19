@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '../lib/supabaseClient';
 import { useGameState } from '../hooks/useGameState';
@@ -11,8 +11,40 @@ export default function Display() {
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const [choices, setChoices] = useState<string[]>([]);
   const [buzzWinner, setBuzzWinner] = useState<string | null>(null);
+  const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
+
+  const bgAudioRef = useRef<HTMLAudioElement | null>(null);
+  const suspenseAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const currentQuestion = settings ? questions.find(q => q.order === settings.current_round) : null;
+
+  // Gestion des pistes audio (Musique d'accueil vs Musique de suspense)
+  useEffect(() => {
+    if (!audioEnabled) return;
+
+    const isWaiting = !settings?.is_playing && !settings?.tie_breaker_mode;
+    const isThinking = settings?.is_playing && !settings?.show_results && !settings?.tie_breaker_mode;
+
+    // Musique d'ambiance d'accueil / attente
+    if (bgAudioRef.current && settings?.bg_audio_url) {
+      if (isWaiting) {
+        bgAudioRef.current.play().catch(() => {});
+      } else {
+        bgAudioRef.current.pause();
+        bgAudioRef.current.currentTime = 0;
+      }
+    }
+
+    // Musique de suspense pendant le chrono
+    if (suspenseAudioRef.current && settings?.suspense_audio_url) {
+      if (isThinking) {
+        suspenseAudioRef.current.play().catch(() => {});
+      } else {
+        suspenseAudioRef.current.pause();
+        suspenseAudioRef.current.currentTime = 0;
+      }
+    }
+  }, [audioEnabled, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, settings?.bg_audio_url, settings?.suspense_audio_url]);
 
   // Gestion du Buzzer en temps réel
   useEffect(() => {
@@ -60,10 +92,61 @@ export default function Display() {
     }
   }, [settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, timeLeft]);
 
+  // Éléments Audio Communs
+  const AudioElements = (
+    <>
+      {settings?.bg_audio_url && (
+        <audio 
+          ref={bgAudioRef} 
+          src={settings.bg_audio_url} 
+          loop 
+          preload="auto" 
+        />
+      )}
+      {settings?.suspense_audio_url && (
+        <audio 
+          ref={suspenseAudioRef} 
+          src={settings.suspense_audio_url} 
+          loop 
+          preload="auto" 
+        />
+      )}
+      <button 
+        onClick={() => {
+          setAudioEnabled(!audioEnabled);
+          if (!audioEnabled) {
+            // Débloque l'audio sur interaction utilisateur
+            if (bgAudioRef.current && settings?.bg_audio_url && !settings?.is_playing) {
+              bgAudioRef.current.play().catch(() => {});
+            }
+          } else {
+            if (bgAudioRef.current) bgAudioRef.current.pause();
+            if (suspenseAudioRef.current) suspenseAudioRef.current.pause();
+          }
+        }}
+        className="fixed bottom-4 right-4 z-50 bg-black/60 hover:bg-black/80 text-white/70 hover:text-white p-3 rounded-full border border-white/20 backdrop-blur-md transition-all shadow-lg text-xs flex items-center gap-2"
+        title={audioEnabled ? "Couper le son" : "Activer le son"}
+      >
+        {audioEnabled ? (
+          <>
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+            <span className="font-sans">Son ON</span>
+          </>
+        ) : (
+          <>
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
+            <span className="font-sans">Activer le son</span>
+          </>
+        )}
+      </button>
+    </>
+  );
+
   // Composant Écran d'Attente
   if (!settings?.is_playing && !settings?.tie_breaker_mode) {
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center relative overflow-hidden">
+        {AudioElements}
         {settings?.bg_video_url && (
           <video autoPlay loop muted className="absolute w-full h-full object-cover opacity-30 z-0">
             <source src={settings.bg_video_url} type="video/mp4" />
@@ -108,6 +191,7 @@ export default function Display() {
 
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center bg-red-900/40">
+        {AudioElements}
         <h1 className="text-6xl text-3d-yellow mb-12 uppercase drop-shadow-2xl animate-pulse">Manche Buzzer !</h1>
         
         {buzzWinner && winnerTeam ? (
@@ -136,6 +220,7 @@ export default function Display() {
   
   return (
     <div className="flex flex-col w-full h-[100dvh] p-6 relative overflow-hidden bg-gradient-to-br from-indigo-900 via-purple-900 to-black">
+      {AudioElements}
       
       {/* Lights effect rotatif */}
       <div className="absolute inset-0 w-full h-full overflow-hidden pointer-events-none opacity-40 mix-blend-screen z-0">
