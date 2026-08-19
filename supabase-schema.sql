@@ -8,6 +8,9 @@ CREATE TABLE IF NOT EXISTS public.game_settings (
   is_playing boolean NOT NULL DEFAULT false,
   show_results boolean NOT NULL DEFAULT false,
   tie_breaker_mode boolean NOT NULL DEFAULT false,
+  tie_breaker_teams jsonb DEFAULT '[]'::jsonb,
+  tie_breaker_question_id uuid,
+  question_started_at text,
   bg_video_url text,
   bg_audio_url text,
   suspense_audio_url text
@@ -42,7 +45,8 @@ CREATE TABLE IF NOT EXISTS public.questions (
   photo_url text,
   duration integer NOT NULL DEFAULT 30,
   correct_answer text NOT NULL,
-  wrong_answers jsonb
+  wrong_answers jsonb,
+  is_bonus boolean DEFAULT false
 );
 
 -- 4. Table: live_answers

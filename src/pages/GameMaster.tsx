@@ -109,7 +109,8 @@ export default function GameMaster() {
       current_round: firstQuestion ? firstQuestion.order : 1,
       current_phase: firstQuestion ? firstQuestion.phase : 1,
       show_results: false,
-      tie_breaker_mode: false
+      tie_breaker_mode: false,
+      question_started_at: new Date().toISOString()
     }).eq('id', 1);
     setIsProcessing(false);
   };
@@ -236,7 +237,8 @@ export default function GameMaster() {
       current_round: nextRoundIndex,
       current_phase: nextQuestion ? nextQuestion.phase : settings.current_phase,
       show_results: false,
-      tie_breaker_mode: false
+      tie_breaker_mode: false,
+      question_started_at: new Date().toISOString()
     }).eq('id', 1);
     
     setIsProcessing(false);
@@ -256,7 +258,9 @@ export default function GameMaster() {
     setBuzzedTeamId(null);
 
     await supabase.from('game_settings').update({
-      tie_breaker_mode: true
+      tie_breaker_mode: true,
+      tie_breaker_teams: tiedIds,
+      tie_breaker_question_id: bonusQ?.id || null
     }).eq('id', 1);
 
     // Broadcast Realtime pour réveiller les écrans
@@ -267,6 +271,41 @@ export default function GameMaster() {
         teamsInTie: tiedIds,
         question: bonusQ,
         targetSpots
+      }
+    });
+
+    setShowTieBreakerModal(true);
+    setIsProcessing(false);
+  };
+
+  // Lancer manuellement le départage
+  const handleManualTieBreakerStart = async () => {
+    setIsProcessing(true);
+    const activeTeamsList = teams.filter(t => !t.is_eliminated).sort((a, b) => b.score - a.score);
+    const bonusQ = bonusQuestions[0] || null;
+    const tiedIds = activeTeamsList.map(t => t.id);
+
+    setTiedTeams(activeTeamsList);
+    setTargetSpots(1);
+    setBonusQuestionIndex(0);
+    setFailedTeamIds([]);
+    setSavedTeamIds([]);
+    setBuzzedTeamId(null);
+
+    await supabase.from('game_settings').update({
+      tie_breaker_mode: true,
+      tie_breaker_teams: tiedIds,
+      tie_breaker_question_id: bonusQ?.id || null
+    }).eq('id', 1);
+
+    // Broadcast Realtime pour réveiller les écrans
+    supabase.channel('buzzer').send({
+      type: 'broadcast',
+      event: 'start_tie_breaker',
+      payload: {
+        teamsInTie: tiedIds,
+        question: bonusQ,
+        targetSpots: 1
       }
     });
 
@@ -293,7 +332,9 @@ export default function GameMaster() {
       }
 
       await supabase.from('game_settings').update({
-        tie_breaker_mode: false
+        tie_breaker_mode: false,
+        tie_breaker_teams: [],
+        tie_breaker_question_id: null
       }).eq('id', 1);
 
       supabase.channel('buzzer').send({
@@ -314,7 +355,14 @@ export default function GameMaster() {
         await supabase.from('game_settings').update({
           current_round: pendingNextRound,
           current_phase: nextQ ? nextQ.phase : (settings ? settings.current_phase + 1 : 1),
-          show_results: false
+          show_results: false,
+          question_started_at: new Date().toISOString()
+        }).eq('id', 1);
+      } else if (settings?.current_phase === 3) {
+        // Fin de la finale
+        await supabase.from('game_settings').update({
+          current_phase: 4,
+          show_results: true
         }).eq('id', 1);
       }
     } else {
@@ -399,7 +447,10 @@ export default function GameMaster() {
       current_round: 1,
       current_phase: 1,
       show_results: false,
-      tie_breaker_mode: false
+      tie_breaker_mode: false,
+      tie_breaker_teams: [],
+      tie_breaker_question_id: null,
+      question_started_at: null
     }).eq('id', 1);
 
     setShowResetModal(false);
@@ -564,11 +615,11 @@ export default function GameMaster() {
                 <button 
                   onClick={() => {
                     if (settings.tie_breaker_mode) {
-                      supabase.from('game_settings').update({ tie_breaker_mode: false }).eq('id', 1);
+                      if (window.confirm("Êtes-vous sûr de vouloir annuler le départage en cours ? Cette action est irréversible.")) {
+                        supabase.from('game_settings').update({ tie_breaker_mode: false, tie_breaker_teams: [], tie_breaker_question_id: null }).eq('id', 1);
+                      }
                     } else {
-                      setTiedTeams(activeTeams);
-                      setTargetSpots(1);
-                      setShowTieBreakerModal(true);
+                      handleManualTieBreakerStart();
                     }
                   }}
                   disabled={isProcessing}

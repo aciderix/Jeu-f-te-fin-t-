@@ -7,6 +7,7 @@ export interface GameSettings {
   tie_breaker_mode: boolean;
   tie_breaker_teams?: string[]; // IDs des équipes en ballotage (ex: ['B', 'D'])
   tie_breaker_question_id?: string; // ID de la question bonus active
+  question_started_at?: string; // ISO date string
   bg_video_url?: string;
   bg_audio_url?: string;
   suspense_audio_url?: string;

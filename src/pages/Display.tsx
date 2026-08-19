@@ -6,6 +6,8 @@ import { useQuestions } from '../hooks/useQuestions';
 import { soundFX } from '../lib/soundEffects';
 import { Question } from '../types';
 
+import { getDeterministicChoices } from '../lib/utils';
+
 export default function Display() {
   const { settings, teams } = useGameState();
   const { questions } = useQuestions();
@@ -16,7 +18,14 @@ export default function Display() {
   const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
   const [rejectedNotice, setRejectedNotice] = useState<string | null>(null);
   const [currentBonusQuestion, setCurrentBonusQuestion] = useState<Question | null>(null);
-  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>([]);
+  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>(settings?.tie_breaker_teams || []);
+
+  // Sync with settings if reloaded
+  useEffect(() => {
+    if (settings?.tie_breaker_teams) {
+      setTiedTeamIds(settings.tie_breaker_teams);
+    }
+  }, [settings?.tie_breaker_teams]);
 
   const bgAudioRef = useRef<HTMLAudioElement | null>(null);
   const suspenseAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -121,28 +130,37 @@ export default function Display() {
   // Préparation de la manche (Mélange des choix et Timer)
   useEffect(() => {
     if (settings?.is_playing && currentQuestion && !settings.show_results && !settings.tie_breaker_mode) {
-      setTimeLeft(currentQuestion.duration);
+      if (settings.question_started_at) {
+        const start = new Date(settings.question_started_at).getTime();
+        const elapsed = (Date.now() - start) / 1000;
+        setTimeLeft(Math.max(0, currentQuestion.duration - elapsed));
+      } else {
+        setTimeLeft(currentQuestion.duration);
+      }
       
       if (currentQuestion.phase === 1 || currentQuestion.phase === 2) {
-        const required = currentQuestion.phase === 1 ? 2 : 4;
-        const allWrongs = [...(currentQuestion.wrong_answers || [])].sort(() => Math.random() - 0.5);
-        const selected = [currentQuestion.correct_answer, ...allWrongs.slice(0, required - 1)];
-        setChoices(selected.sort(() => Math.random() - 0.5));
+        setChoices(getDeterministicChoices(currentQuestion));
       } else {
         setChoices([]);
       }
     }
-  }, [settings?.current_round, settings?.is_playing, currentQuestion, settings?.show_results, settings?.tie_breaker_mode]);
+  }, [settings?.current_round, settings?.is_playing, currentQuestion, settings?.show_results, settings?.tie_breaker_mode, settings?.question_started_at]);
 
   // Décompte du Timer
   useEffect(() => {
     if (settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode && timeLeft > 0) {
       const timer = setInterval(() => {
-        setTimeLeft(prev => Math.max(0, prev - 0.1));
+        if (settings?.question_started_at && currentQuestion) {
+           const start = new Date(settings.question_started_at).getTime();
+           const elapsed = (Date.now() - start) / 1000;
+           setTimeLeft(Math.max(0, currentQuestion.duration - elapsed));
+        } else {
+           setTimeLeft(prev => Math.max(0, prev - 0.1));
+        }
       }, 100);
       return () => clearInterval(timer);
     }
-  }, [settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, timeLeft]);
+  }, [settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, timeLeft, settings?.question_started_at, currentQuestion]);
 
   // Éléments Audio Communs
   const AudioElements = (
@@ -233,6 +251,47 @@ export default function Display() {
             className="mt-12 bg-black/50 px-8 py-4 rounded-full border-2 border-white/20 backdrop-blur-md"
           >
             <p className="text-2xl text-white font-paytone tracking-widest uppercase">Préparez-vous...</p>
+          </motion.div>
+        </div>
+      </div>
+    );
+  }
+
+  // 1.5. ÉCRAN DE FIN DE PARTIE (Phase 4)
+  if (settings?.current_phase === 4) {
+    const winner = teams.find(t => !t.is_eliminated) || teams.sort((a, b) => b.score - a.score)[0];
+    
+    return (
+      <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center relative overflow-hidden bg-sunburst">
+        {AudioElements}
+        
+        {/* Background animé rotatif */}
+        <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[150vw] h-[150vw] md:w-[150vh] md:h-[150vh] animate-[spin_40s_linear_infinite] opacity-30">
+            <div className="absolute top-0 left-0 w-1/2 h-1/2 bg-yellow-600 rounded-full mix-blend-screen filter blur-[100px]"></div>
+            <div className="absolute bottom-0 right-0 w-1/2 h-1/2 bg-orange-600 rounded-full mix-blend-screen filter blur-[100px]"></div>
+          </div>
+        </div>
+
+        <div className="z-10 flex flex-col items-center w-full max-w-4xl">
+          <motion.div 
+            initial={{ scale: 0.5, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: 'spring', bounce: 0.6, duration: 1.5 }}
+            className="w-full flex flex-col items-center justify-center mb-8 drop-shadow-2xl"
+          >
+            <div className="text-8xl mb-6">🏆</div>
+            <h1 className="text-5xl md:text-7xl font-paytone text-3d-yellow uppercase mb-4 tracking-widest">
+              GRANDE VICTOIRE
+            </h1>
+            <div className="bg-black/60 border-4 border-yellow-400 p-8 rounded-3xl backdrop-blur-md shadow-[0_0_50px_rgba(234,179,8,0.5)]">
+              <p className="text-6xl md:text-8xl font-paytone text-white drop-shadow-[0_0_20px_rgba(255,255,255,0.5)] mb-4">
+                {winner?.name || `Équipe ${winner?.id}`}
+              </p>
+              <p className="text-3xl text-yellow-300 font-bold uppercase">
+                Avec {winner?.score} points !
+              </p>
+            </div>
           </motion.div>
         </div>
       </div>

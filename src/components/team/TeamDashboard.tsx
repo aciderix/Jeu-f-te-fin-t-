@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { useGameState } from '../../hooks/useGameState';
 import { useQuestions } from '../../hooks/useQuestions';
+import { getDeterministicChoices } from '../../lib/utils';
 
 // Fonction pour calculer la distance de Levenshtein (tolérance fautes de frappe)
 const getLevenshteinDistance = (a: string, b: string): number => {
@@ -39,12 +40,19 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
   const [liveAnswer, setLiveAnswer] = useState<string | null>(null);
   const [textInput, setTextInput] = useState('');
   const [startTime, setStartTime] = useState<number>(0);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // État Realtime du départage au buzzer
   const [buzzedTeamId, setBuzzedTeamId] = useState<string | null>(null);
   const [failedTeamIds, setFailedTeamIds] = useState<string[]>([]);
-  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>([]);
+  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>(settings?.tie_breaker_teams || []);
+
+  useEffect(() => {
+    if (settings?.tie_breaker_teams) {
+      setTiedTeamIds(settings.tie_breaker_teams);
+    }
+  }, [settings?.tie_breaker_teams]);
 
   const regularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
   const team = teams.find(t => t.id === teamId);
@@ -106,16 +114,33 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
   useEffect(() => {
     if (question && settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode) {
       if (question.phase === 1 || question.phase === 2) {
-        const required = question.phase === 1 ? 2 : 4;
-        const allWrongs = [...(question.wrong_answers || [])].sort(() => Math.random() - 0.5);
-        const selected = [question.correct_answer, ...allWrongs.slice(0, required - 1)];
-        setChoices(selected.sort(() => Math.random() - 0.5));
+        setChoices(getDeterministicChoices(question));
       } else {
         setChoices([]);
       }
-      setStartTime(Date.now());
+      
+      const st = settings.question_started_at ? new Date(settings.question_started_at).getTime() : Date.now();
+      setStartTime(st);
+      const elapsed = (Date.now() - st) / 1000;
+      setTimeLeft(Math.max(0, question.duration - elapsed));
     }
-  }, [question, settings?.current_round, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode]);
+  }, [question, settings?.current_round, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, settings?.question_started_at]);
+
+  // Décompte du Timer
+  useEffect(() => {
+    if (settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode && timeLeft > 0) {
+      const timer = setInterval(() => {
+        if (settings?.question_started_at && question) {
+           const start = new Date(settings.question_started_at).getTime();
+           const elapsed = (Date.now() - start) / 1000;
+           setTimeLeft(Math.max(0, question.duration - elapsed));
+        } else {
+           setTimeLeft(prev => Math.max(0, prev - 1));
+        }
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, timeLeft, settings?.question_started_at, question]);
 
   // 3. Vérifier si l'équipe a déjà répondu pour cette manche
   useEffect(() => {
@@ -175,6 +200,27 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
         </div>
         
         <button onClick={onLeave} className="mt-12 text-white/50 hover:text-white underline font-sans">Changer d'équipe</button>
+      </div>
+    );
+  }
+
+  // ÉCRAN FINALE (Phase 4)
+  if (settings.current_phase === 4) {
+    const winner = teams.find(t => !t.is_eliminated) || teams.sort((a, b) => b.score - a.score)[0];
+    const isWinner = winner?.id === team.id;
+    return (
+      <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center bg-gray-900 absolute inset-0 z-50">
+        <div className={`${isWinner ? 'bg-yellow-600 border-yellow-400' : 'bg-gray-800 border-gray-600'} p-8 rounded-3xl border-4 w-full max-w-md shadow-2xl`}>
+          <h2 className={`text-5xl ${isWinner ? 'text-white' : 'text-gray-400'} font-paytone mb-4`}>
+            {isWinner ? '🏆 VICTOIRE !' : 'FIN DE PARTIE'}
+          </h2>
+          <p className={`text-2xl ${isWinner ? 'text-yellow-200' : 'text-gray-500'} font-bold uppercase tracking-widest mb-6`}>
+            {isWinner ? 'Félicitations !' : 'Merci d\'avoir joué !'}
+          </p>
+          <p className={`text-xl ${isWinner ? 'text-white' : 'text-gray-400'} font-paytone mt-6`}>
+            Score final : {team.score}
+          </p>
+        </div>
       </div>
     );
   }
@@ -309,6 +355,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
 
   const submitAnswer = async (answer: string) => {
     if (isSubmitting || liveAnswer) return;
+    if (timeLeft <= 0) return; // Prevent answering if time is up
     setIsSubmitting(true);
     
     const timeTaken = (Date.now() - startTime) / 1000;
@@ -374,8 +421,8 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
               <button 
                 key={idx}
                 onClick={() => submitAnswer(choice)}
-                disabled={isSubmitting}
-                className={`w-full ${colorClass} text-white font-paytone text-xl md:text-2xl py-4 md:py-6 px-4 rounded-3xl border-2 border-b-4 transition-all active:translate-y-1 break-words disabled:opacity-50 relative overflow-hidden`}
+                disabled={isSubmitting || timeLeft <= 0}
+                className={`w-full ${colorClass} text-white font-paytone text-xl md:text-2xl py-4 md:py-6 px-4 rounded-3xl border-2 border-b-4 transition-all active:translate-y-1 break-words disabled:opacity-50 relative overflow-hidden ${timeLeft <= 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-white/20 to-transparent rounded-t-3xl pointer-events-none"></div>
                 <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{choice}</span>
@@ -396,16 +443,17 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
             type="text" 
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
-            placeholder="Tapez le nom..."
-            className="w-full bg-white text-black font-sans font-bold text-2xl p-4 rounded-xl mb-4 text-center outline-none focus:ring-4 focus:ring-blue-500"
+            disabled={timeLeft <= 0}
+            placeholder={timeLeft <= 0 ? "Temps écoulé !" : "Tapez le nom..."}
+            className={`w-full bg-white text-black font-sans font-bold text-2xl p-4 rounded-xl mb-4 text-center outline-none focus:ring-4 focus:ring-blue-500 ${timeLeft <= 0 ? 'opacity-50' : ''}`}
             autoFocus
           />
           <button 
             type="submit"
-            disabled={isSubmitting || !textInput.trim()}
+            disabled={isSubmitting || !textInput.trim() || timeLeft <= 0}
             className="w-full bg-green-500 hover:bg-green-400 border-green-700 shadow-[0_6px_0_rgb(21,128,61)] text-white text-2xl font-paytone uppercase py-4 rounded-xl border-4 transition-all active:translate-y-1 active:shadow-none disabled:opacity-50 disabled:active:translate-y-0 disabled:shadow-[0_6px_0_rgb(21,128,61)]"
           >
-            Valider
+            {timeLeft <= 0 ? 'Temps écoulé' : 'Valider'}
           </button>
         </form>
       )}
