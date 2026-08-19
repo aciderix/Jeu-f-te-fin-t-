@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { HashRouter, Routes, Route } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
 import Hub from './pages/Hub';
 import Display from './pages/Display';
@@ -8,7 +8,7 @@ import Admin from './pages/Admin';
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Routes>
         <Route path="/" element={<MainLayout />}>
           <Route index element={<Hub />} />
@@ -18,6 +18,6 @@ export default function App() {
           <Route path="admin" element={<Admin />} />
         </Route>
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   );
 }

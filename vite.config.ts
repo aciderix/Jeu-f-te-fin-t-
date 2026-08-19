@@ -6,6 +6,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
+    base: './', // Permet un déploiement correct sur GitHub Pages peu importe le sous-dossier
     plugins: [
       react(), 
       tailwindcss(),
