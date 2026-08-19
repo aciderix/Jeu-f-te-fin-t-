@@ -8,9 +8,23 @@ export interface GameSettings {
   tie_breaker_teams?: string[]; // IDs des équipes en ballotage (ex: ['B', 'D'])
   tie_breaker_question_id?: string; // ID de la question bonus active
   question_started_at?: string; // ISO date string
+  winner_team_id?: string | null;
   bg_video_url?: string;
   bg_audio_url?: string;
   suspense_audio_url?: string;
+}
+
+export type TieBreakerSessionStatus = 'active' | 'finished' | 'cancelled';
+
+export interface TieBreakerSession {
+  id: number;
+  question_id: string | null;
+  tied_team_ids: string[];
+  saved_team_ids: string[];
+  failed_team_ids: string[];
+  buzzed_team_id: string | null;
+  target_spots: number;
+  status: TieBreakerSessionStatus;
 }
 
 export interface Team {

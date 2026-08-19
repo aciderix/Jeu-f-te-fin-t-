@@ -9,30 +9,8 @@ import { TieBreakerModal } from '../components/gamemaster/TieBreakerModal';
 import { PhaseEndModal } from '../components/gamemaster/PhaseEndModal';
 import { soundFX } from '../lib/soundEffects';
 import { Team } from '../types';
-
-// Distance de Levenshtein pour tolérance fautes de frappe
-const getLevenshteinDistance = (a: string, b: string): number => {
-  if (a.length === 0) return b.length;
-  if (b.length === 0) return a.length;
-  const matrix = [];
-  for (let i = 0; i <= b.length; i++) { matrix[i] = [i]; }
-  for (let j = 0; j <= a.length; j++) { matrix[0][j] = j; }
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      if (b.charAt(i - 1) === a.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1));
-      }
-    }
-  }
-  return matrix[b.length][a.length];
-};
-
-// Normalisation de texte
-const normalizeText = (text: string) => {
-  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
-};
+import { useTieBreakerSession } from '../hooks/useTieBreakerSession';
+import { isAnswerCorrect } from '../lib/utils';
 
 export default function GameMaster() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -56,13 +34,50 @@ export default function GameMaster() {
   const [savedTeamIds, setSavedTeamIds] = useState<string[]>([]);
 
   const { settings, teams, error: gameStateError } = useGameState();
+  const { tieBreakerSession } = useTieBreakerSession();
   const { questions } = useQuestions();
   const { liveAnswers, clearAnswers } = useLiveAnswers();
 
   // Questions régulières et questions bonus
   const regularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
   const bonusQuestions = questions.filter(q => q.phase === 0 || q.is_bonus);
-  const currentBonusQuestion = bonusQuestions[bonusQuestionIndex] || null;
+  const currentBonusQuestion = bonusQuestions.find(q => q.id === tieBreakerSession.question_id)
+    || bonusQuestions[bonusQuestionIndex]
+    || null;
+
+  const scheduleQuestionStart = async (updates: Record<string, unknown>) => {
+    const round = updates.current_round;
+    await supabase.from('game_settings').update({
+      ...updates,
+      question_started_at: null
+    }).eq('id', 1);
+
+    window.setTimeout(() => {
+      let request = supabase.from('game_settings')
+        .update({ question_started_at: new Date().toISOString() })
+        .eq('id', 1);
+      if (typeof round === 'number') request = request.eq('current_round', round);
+      void request.then(() => {});
+    }, 1500);
+  };
+
+  useEffect(() => {
+    if (tieBreakerSession.status !== 'active') return;
+
+    const sessionTeams = teams.filter(team => tieBreakerSession.tied_team_ids.includes(team.id));
+    const currentRegularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
+    const currentRegularIndex = settings
+      ? currentRegularQuestions.findIndex(question => question.order === settings.current_round)
+      : -1;
+    const nextRegularQuestion = currentRegularQuestions[currentRegularIndex + 1];
+    setTiedTeams(sessionTeams);
+    setTargetSpots(tieBreakerSession.target_spots);
+    setSavedTeamIds(tieBreakerSession.saved_team_ids);
+    setFailedTeamIds(tieBreakerSession.failed_team_ids);
+    setBuzzedTeamId(tieBreakerSession.buzzed_team_id);
+    setPendingNextRound(nextRegularQuestion?.order || null);
+    setShowTieBreakerModal(true);
+  }, [tieBreakerSession, teams, settings, questions]);
 
   // Écoute du canal Realtime buzzer
   useEffect(() => {
@@ -75,6 +90,7 @@ export default function GameMaster() {
         setBuzzedTeamId((current) => {
           if (current) return current;
           soundFX.playBuzzer();
+          void supabase.from('tie_breaker_sessions').update({ buzzed_team_id: teamId }).eq('id', 1);
           // Ouvre la modale de validation si elle était fermée
           setShowTieBreakerModal(true);
           return teamId;
@@ -104,14 +120,14 @@ export default function GameMaster() {
     await clearAnswers();
     const firstQuestion = regularQuestions.find(q => q.order === 1) || regularQuestions[0];
     
-    await supabase.from('game_settings').update({
+    await scheduleQuestionStart({
       is_playing: true,
       current_round: firstQuestion ? firstQuestion.order : 1,
       current_phase: firstQuestion ? firstQuestion.phase : 1,
       show_results: false,
       tie_breaker_mode: false,
-      question_started_at: new Date().toISOString()
-    }).eq('id', 1);
+      winner_team_id: null
+    });
     setIsProcessing(false);
   };
 
@@ -128,11 +144,7 @@ export default function GameMaster() {
         
         const teamAnswer = liveAnswers.find(a => a.team_id === team.id);
         if (teamAnswer) {
-          const normInput = normalizeText(teamAnswer.answer);
-          const normTarget = normalizeText(currentQuestion.correct_answer);
-          
-          const maxTypos = normTarget.length >= 6 ? 2 : 1;
-          const isCorrect = getLevenshteinDistance(normInput, normTarget) <= maxTypos;
+          const isCorrect = isAnswerCorrect(teamAnswer.answer, currentQuestion.correct_answer);
           
           if (isCorrect) {
             await supabase.from('teams')
@@ -163,7 +175,9 @@ export default function GameMaster() {
 
     if (isPhaseEnd && currentQuestion) {
       // Détection des éliminations ou des égalités
-      const activeTeams = teams.filter(t => !t.is_eliminated).sort((a, b) => b.score - a.score);
+      const { data: latestTeams } = await supabase.from('teams').select('*').order('id');
+      const teamsForDecision = (latestTeams as Team[] | null) || teams;
+      const activeTeams = teamsForDecision.filter(t => !t.is_eliminated).sort((a, b) => b.score - a.score);
       const phase = currentQuestion.phase;
 
       if (phase === 1) {
@@ -233,13 +247,12 @@ export default function GameMaster() {
     await clearAnswers();
     const nextRoundIndex = nextQuestion ? nextQuestion.order : settings.current_round + 1;
     
-    await supabase.from('game_settings').update({
+    await scheduleQuestionStart({
       current_round: nextRoundIndex,
       current_phase: nextQuestion ? nextQuestion.phase : settings.current_phase,
       show_results: false,
-      tie_breaker_mode: false,
-      question_started_at: new Date().toISOString()
-    }).eq('id', 1);
+      tie_breaker_mode: false
+    });
     
     setIsProcessing(false);
   };
@@ -262,6 +275,17 @@ export default function GameMaster() {
       tie_breaker_teams: tiedIds,
       tie_breaker_question_id: bonusQ?.id || null
     }).eq('id', 1);
+
+    await supabase.from('tie_breaker_sessions').upsert({
+      id: 1,
+      question_id: bonusQ?.id || null,
+      tied_team_ids: tiedIds,
+      saved_team_ids: [],
+      failed_team_ids: [],
+      buzzed_team_id: null,
+      target_spots: targetSpots,
+      status: 'active'
+    });
 
     // Broadcast Realtime pour réveiller les écrans
     supabase.channel('buzzer').send({
@@ -298,6 +322,17 @@ export default function GameMaster() {
       tie_breaker_question_id: bonusQ?.id || null
     }).eq('id', 1);
 
+    await supabase.from('tie_breaker_sessions').upsert({
+      id: 1,
+      question_id: bonusQ?.id || null,
+      tied_team_ids: tiedIds,
+      saved_team_ids: [],
+      failed_team_ids: [],
+      buzzed_team_id: null,
+      target_spots: 1,
+      status: 'active'
+    });
+
     // Broadcast Realtime pour réveiller les écrans
     supabase.channel('buzzer').send({
       type: 'broadcast',
@@ -316,19 +351,40 @@ export default function GameMaster() {
   // Valider la bonne réponse d'une équipe en départage
   const handleValidateTieAnswer = async (teamId: string) => {
     soundFX.playCorrect();
-    const newSaved = [...savedTeamIds, teamId];
+    const { data: persistedSession } = await supabase
+      .from('tie_breaker_sessions')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+
+    const persistedTiedIds = Array.isArray(persistedSession?.tied_team_ids)
+      ? persistedSession.tied_team_ids as string[]
+      : tiedTeams.map(team => team.id);
+    const persistedSavedIds = Array.isArray(persistedSession?.saved_team_ids)
+      ? persistedSession.saved_team_ids as string[]
+      : savedTeamIds;
+    const persistedTargetSpots = typeof persistedSession?.target_spots === 'number'
+      ? persistedSession.target_spots
+      : targetSpots;
+    const newSaved = Array.from(new Set([...persistedSavedIds, teamId]));
     setSavedTeamIds(newSaved);
     setBuzzedTeamId(null);
 
+    await supabase.from('tie_breaker_sessions').update({
+      saved_team_ids: newSaved,
+      failed_team_ids: [],
+      buzzed_team_id: null
+    }).eq('id', 1);
+
     // Vérifier si le départage est terminé
-    const remainingToEliminate = tiedTeams.length - targetSpots;
-    const remainingInTie = tiedTeams.filter(t => !newSaved.includes(t.id));
+    const remainingToEliminate = persistedTiedIds.length - persistedTargetSpots;
+    const remainingInTie = persistedTiedIds.filter(teamIdInTie => !newSaved.includes(teamIdInTie));
 
     if (remainingInTie.length <= remainingToEliminate) {
       // Toutes les places qualificatives sont attribuées !
       // Les équipes restantes dans remainingInTie sont éliminées
-      for (const elimTeam of remainingInTie) {
-        await supabase.from('teams').update({ is_eliminated: true }).eq('id', elimTeam.id);
+      for (const elimTeamId of remainingInTie) {
+        await supabase.from('teams').update({ is_eliminated: true }).eq('id', elimTeamId);
       }
 
       await supabase.from('game_settings').update({
@@ -337,32 +393,47 @@ export default function GameMaster() {
         tie_breaker_question_id: null
       }).eq('id', 1);
 
+      await supabase.from('tie_breaker_sessions').update({
+        saved_team_ids: newSaved,
+        failed_team_ids: [],
+        buzzed_team_id: null,
+        status: 'finished'
+      }).eq('id', 1);
+
       supabase.channel('buzzer').send({
         type: 'broadcast',
         event: 'tie_breaker_finished',
         payload: {
           savedTeamIds: newSaved,
-          eliminatedTeamIds: remainingInTie.map(t => t.id)
+          eliminatedTeamIds: remainingInTie
         }
       });
 
       setShowTieBreakerModal(false);
       
       // Passer à la phase suivante
-      if (pendingNextRound) {
+      const nextRound = pendingNextRound || (() => {
+        const currentRegularIndex = settings
+          ? regularQuestions.findIndex(question => question.order === settings.current_round)
+          : -1;
+        return regularQuestions[currentRegularIndex + 1]?.order || null;
+      })();
+
+      if (nextRound) {
         await clearAnswers();
-        const nextQ = regularQuestions.find(q => q.order === pendingNextRound);
-        await supabase.from('game_settings').update({
-          current_round: pendingNextRound,
+        const nextQ = regularQuestions.find(q => q.order === nextRound);
+        await scheduleQuestionStart({
+          current_round: nextRound,
           current_phase: nextQ ? nextQ.phase : (settings ? settings.current_phase + 1 : 1),
-          show_results: false,
-          question_started_at: new Date().toISOString()
-        }).eq('id', 1);
+          show_results: false
+        });
       } else if (settings?.current_phase === 3) {
         // Fin de la finale
+        const winnerId = newSaved[0] || teamId;
         await supabase.from('game_settings').update({
           current_phase: 4,
-          show_results: true
+          show_results: true,
+          winner_team_id: winnerId
         }).eq('id', 1);
       }
     } else {
@@ -372,11 +443,16 @@ export default function GameMaster() {
   };
 
   // Refuser la réponse (mauvaise réponse)
-  const handleRejectTieAnswer = (teamId: string) => {
+  const handleRejectTieAnswer = async (teamId: string) => {
     soundFX.playWrong();
     const newFailed = [...failedTeamIds, teamId];
     setFailedTeamIds(newFailed);
     setBuzzedTeamId(null);
+
+    await supabase.from('tie_breaker_sessions').update({
+      failed_team_ids: newFailed,
+      buzzed_team_id: null
+    }).eq('id', 1);
 
     supabase.channel('buzzer').send({
       type: 'broadcast',
@@ -389,13 +465,20 @@ export default function GameMaster() {
   };
 
   // Passer à la photo bonus suivante
-  const handleNextBonusQuestion = () => {
-    const nextIndex = (bonusQuestionIndex + 1) % (bonusQuestions.length || 1);
+  const handleNextBonusQuestion = async () => {
+    const persistedIndex = bonusQuestions.findIndex(question => question.id === tieBreakerSession.question_id);
+    const currentIndex = persistedIndex >= 0 ? persistedIndex : bonusQuestionIndex;
+    const nextIndex = (currentIndex + 1) % (bonusQuestions.length || 1);
     setBonusQuestionIndex(nextIndex);
     setFailedTeamIds([]);
     setBuzzedTeamId(null);
 
     const nextBonusQ = bonusQuestions[nextIndex] || null;
+    await supabase.from('tie_breaker_sessions').update({
+      question_id: nextBonusQ?.id || null,
+      failed_team_ids: [],
+      buzzed_team_id: null
+    }).eq('id', 1);
     if (nextBonusQ) {
       supabase.channel('buzzer').send({
         type: 'broadcast',
@@ -409,11 +492,30 @@ export default function GameMaster() {
 
   // Confirmer le passage à la phase suivante (sans égalité)
   const handleConfirmNextPhaseWithoutTie = async () => {
+    if (!settings) return;
+
+    const { data: latestTeams } = await supabase.from('teams').select('*').order('id');
+    const teamsForDecision = (latestTeams as Team[] | null) || teams;
+    const currentPhaseTeams = teamsForDecision.filter(t => !t.is_eliminated).sort((a, b) => b.score - a.score);
+    const phase = settings.current_phase;
+    const tieRequiresBuzzer = (phase === 1 && currentPhaseTeams.length >= 4 && currentPhaseTeams[2].score === currentPhaseTeams[3].score)
+      || (phase === 2 && currentPhaseTeams.length >= 3 && currentPhaseTeams[1].score === currentPhaseTeams[2].score)
+      || (phase === 3 && currentPhaseTeams.length >= 2 && currentPhaseTeams[0].score === currentPhaseTeams[1].score);
+
+    if (tieRequiresBuzzer) {
+      const cutoffIndex = phase === 1 ? 2 : phase === 2 ? 1 : 0;
+      const cutoffScore = currentPhaseTeams[cutoffIndex]?.score;
+      const tied = currentPhaseTeams.filter(team => team.score === cutoffScore);
+      setTiedTeams(tied);
+      setTargetSpots(phase === 1 ? 3 - currentPhaseTeams.filter(team => team.score > cutoffScore).length : phase === 2 ? 2 - currentPhaseTeams.filter(team => team.score > cutoffScore).length : 1);
+      setShowPhaseEndModal(true);
+      return;
+    }
+
     setShowPhaseEndModal(false);
     setIsProcessing(true);
 
-    const activeTeams = teams.filter(t => !t.is_eliminated).sort((a, b) => b.score - a.score);
-    const phase = settings?.current_phase || 1;
+    const activeTeams = currentPhaseTeams;
 
     // Élimination de l'équipe au score le plus bas
     if (phase === 1 && activeTeams.length >= 4) {
@@ -425,11 +527,22 @@ export default function GameMaster() {
     if (phase < 3 && pendingNextRound) {
       await clearAnswers();
       const nextQ = regularQuestions.find(q => q.order === pendingNextRound);
-      await supabase.from('game_settings').update({
+      await scheduleQuestionStart({
         current_round: pendingNextRound,
         current_phase: nextQ ? nextQ.phase : phase + 1,
         show_results: false,
-        tie_breaker_mode: false
+        tie_breaker_mode: false,
+        winner_team_id: null
+      });
+    } else if (phase === 3 && activeTeams.length > 0) {
+      const winner = activeTeams[0];
+      await supabase.from('teams').update({ is_eliminated: true }).neq('id', winner.id);
+      await supabase.from('game_settings').update({
+        current_phase: 4,
+        show_results: true,
+        tie_breaker_mode: false,
+        winner_team_id: winner.id,
+        question_started_at: new Date().toISOString()
       }).eq('id', 1);
     }
 
@@ -450,7 +563,18 @@ export default function GameMaster() {
       tie_breaker_mode: false,
       tie_breaker_teams: [],
       tie_breaker_question_id: null,
-      question_started_at: null
+      question_started_at: null,
+      winner_team_id: null
+    }).eq('id', 1);
+
+    await supabase.from('tie_breaker_sessions').update({
+      question_id: null,
+      tied_team_ids: [],
+      saved_team_ids: [],
+      failed_team_ids: [],
+      buzzed_team_id: null,
+      target_spots: 1,
+      status: 'cancelled'
     }).eq('id', 1);
 
     setShowResetModal(false);
@@ -504,6 +628,14 @@ export default function GameMaster() {
   const winnerTeam = activeTeams.length > 0 ? activeTeams[0] : null;
   const hasTie = tiedTeams.length > 0;
   const buzzedTeam = teams.find(t => t.id === buzzedTeamId) || null;
+  const answeredActiveTeamCount = liveAnswers.filter(answer => activeTeams.some(team => team.id === answer.team_id)).length;
+  const allActiveTeamsAnswered = activeTeams.length > 0 && answeredActiveTeamCount >= activeTeams.length;
+  const regularQuestionsForDisplay = questions.filter(q => q.phase !== 0 && !q.is_bonus);
+  const currentRegularIndex = currentQuestion
+    ? regularQuestionsForDisplay.findIndex(question => question.order === currentQuestion.order)
+    : -1;
+  const nextRegularQuestion = regularQuestionsForDisplay[currentRegularIndex + 1];
+  const isCurrentPhaseEnding = Boolean(currentQuestion && (!nextRegularQuestion || nextRegularQuestion.phase !== currentQuestion.phase));
 
   return (
     <div className="flex flex-col items-center w-full min-h-screen p-4 md:p-8">
@@ -580,6 +712,27 @@ export default function GameMaster() {
           <div className="flex flex-col gap-6 w-full max-w-3xl mx-auto">
           <div className="bg-black/40 p-6 rounded-3xl border-2 border-white/20 shadow-xl">
             <h2 className="text-2xl text-white font-paytone mb-6">Contrôles</h2>
+
+            {settings?.is_playing && !settings.show_results && (
+              <div className="mb-5 rounded-xl border border-white/15 bg-black/30 px-4 py-2 text-center">
+                <p className="text-xs font-bold uppercase tracking-widest text-white/60">Réponses reçues</p>
+                <p className="font-paytone text-xl text-yellow-300">{answeredActiveTeamCount} / {activeTeams.length} équipes en jeu</p>
+              </div>
+            )}
+
+            {settings?.is_playing && !settings.show_results && allActiveTeamsAnswered && (
+              <div className="mb-5 rounded-2xl border-2 border-green-400/70 bg-green-950/50 p-4 text-center shadow-[0_0_20px_rgba(74,222,128,0.2)]">
+                <p className="font-paytone text-xl uppercase tracking-wider text-green-300">Toutes les équipes ont répondu</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-widest text-white/70">{answeredActiveTeamCount} / {activeTeams.length} réponses · Révéler les résultats quand vous êtes prêt</p>
+              </div>
+            )}
+
+            {settings?.is_playing && settings.show_results && isCurrentPhaseEnding && (
+              <div className="mb-5 rounded-2xl border-2 border-yellow-400/70 bg-yellow-950/40 p-4 text-center shadow-[0_0_20px_rgba(234,179,8,0.2)]">
+                <p className="font-paytone text-xl uppercase tracking-wider text-yellow-300">Phase {currentQuestion?.phase} terminée</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-widest text-white/75">Clôturez la phase pour confirmer le classement. En cas d’égalité, le départage au buzzer sera proposé.</p>
+              </div>
+            )}
             
             {!settings?.is_playing ? (
               <button 
@@ -607,7 +760,7 @@ export default function GameMaster() {
                   className="w-full relative overflow-hidden bg-gradient-to-b from-blue-400 to-blue-700 border-blue-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(30,58,138),0_10px_20px_rgba(0,0,0,0.5)] active:shadow-[inset_0px_2px_4px_rgba(255,255,255,0.2),0_2px_0_rgb(30,58,138),0_5px_10px_rgba(0,0,0,0.5)] hover:from-blue-300 hover:to-blue-600 text-white text-xl font-paytone py-5 rounded-3xl border-2 border-b-4 uppercase tracking-wider transition-all active:translate-y-1 disabled:opacity-50"
                 >
                   <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-white/20 to-transparent rounded-t-3xl pointer-events-none"></div>
-                  <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">Manche Suivante ⏭</span>
+                  <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{isCurrentPhaseEnding ? 'Clôturer la phase' : 'Manche Suivante ⏭'}</span>
                 </button>
 
                 <div className="h-px bg-white/10 my-2"></div>
@@ -617,6 +770,7 @@ export default function GameMaster() {
                     if (settings.tie_breaker_mode) {
                       if (window.confirm("Êtes-vous sûr de vouloir annuler le départage en cours ? Cette action est irréversible.")) {
                         supabase.from('game_settings').update({ tie_breaker_mode: false, tie_breaker_teams: [], tie_breaker_question_id: null }).eq('id', 1);
+                        supabase.from('tie_breaker_sessions').update({ status: 'cancelled' }).eq('id', 1);
                       }
                     } else {
                       handleManualTieBreakerStart();
@@ -718,7 +872,7 @@ export default function GameMaster() {
                          <div className="text-right">
                            <span className="block text-xs text-white/50 mb-0.5">{teamAnswer.time_taken.toFixed(1)}s</span>
                            <span className={`font-bold text-lg ${settings?.show_results ? (
-                             getLevenshteinDistance(normalizeText(teamAnswer.answer), normalizeText(currentQuestion?.correct_answer || '')) <= ((currentQuestion?.correct_answer?.length || 0) >= 6 ? 2 : 1)
+                             isAnswerCorrect(teamAnswer.answer, currentQuestion?.correct_answer || '')
                              ? 'text-green-400' : 'text-red-400'
                            ) : 'text-white'}`}>
                              {settings?.show_results || settings?.tie_breaker_mode ? teamAnswer.answer : '••••••••'}

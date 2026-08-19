@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabaseClient';
 import { useGameState } from '../../hooks/useGameState';
 import { useQuestions } from '../../hooks/useQuestions';
 import { getDeterministicChoices } from '../../lib/utils';
+import { useTieBreakerSession } from '../../hooks/useTieBreakerSession';
 
 // Fonction pour calculer la distance de Levenshtein (tolérance fautes de frappe)
 const getLevenshteinDistance = (a: string, b: string): number => {
@@ -35,6 +36,7 @@ interface Props {
 
 export default function TeamDashboard({ teamId, onLeave }: Props) {
   const { settings, teams } = useGameState();
+  const { tieBreakerSession } = useTieBreakerSession();
   const { questions } = useQuestions();
   const [choices, setChoices] = useState<string[]>([]);
   const [liveAnswer, setLiveAnswer] = useState<string | null>(null);
@@ -46,17 +48,21 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
   // État Realtime du départage au buzzer
   const [buzzedTeamId, setBuzzedTeamId] = useState<string | null>(null);
   const [failedTeamIds, setFailedTeamIds] = useState<string[]>([]);
-  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>(settings?.tie_breaker_teams || []);
+  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>([]);
+  const [savedTeamIds, setSavedTeamIds] = useState<string[]>([]);
 
   useEffect(() => {
-    if (settings?.tie_breaker_teams) {
-      setTiedTeamIds(settings.tie_breaker_teams);
-    }
-  }, [settings?.tie_breaker_teams]);
+    setTiedTeamIds(tieBreakerSession.tied_team_ids);
+    setFailedTeamIds(tieBreakerSession.failed_team_ids);
+    setSavedTeamIds(tieBreakerSession.saved_team_ids);
+    setBuzzedTeamId(tieBreakerSession.buzzed_team_id);
+  }, [tieBreakerSession]);
 
   const regularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
+  const bonusQuestions = questions.filter(q => q.phase === 0 || q.is_bonus);
   const team = teams.find(t => t.id === teamId);
   const question = settings ? regularQuestions.find(q => q.order === settings.current_round) : null;
+  const bonusQuestion = bonusQuestions.find(q => q.id === tieBreakerSession.question_id) || null;
 
   const teamColor = 
     teamId === 'A' ? 'bg-blue-600 border-blue-800 shadow-[0_6px_0_rgb(30,58,138)]' :
@@ -119,10 +125,10 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
         setChoices([]);
       }
       
-      const st = settings.question_started_at ? new Date(settings.question_started_at).getTime() : Date.now();
+      const st = settings.question_started_at ? new Date(settings.question_started_at).getTime() : 0;
       setStartTime(st);
-      const elapsed = (Date.now() - st) / 1000;
-      setTimeLeft(Math.max(0, question.duration - elapsed));
+      const elapsed = st ? (Date.now() - st) / 1000 : question.duration;
+      setTimeLeft(st ? Math.max(0, question.duration - elapsed) : 0);
     }
   }, [question, settings?.current_round, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, settings?.question_started_at]);
 
@@ -146,6 +152,13 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
   useEffect(() => {
     if (!settings?.current_round) return;
 
+    if (!settings.is_playing || !settings.question_started_at) {
+      setLiveAnswer(null);
+      setTextInput('');
+      setIsSubmitting(false);
+      return;
+    }
+
     const checkExistingAnswer = async () => {
       const { data: ansData } = await supabase
         .from('live_answers')
@@ -162,7 +175,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
     };
 
     checkExistingAnswer();
-  }, [settings?.current_round, teamId]);
+  }, [settings?.current_round, settings?.is_playing, settings?.question_started_at, teamId]);
 
   // Si l'équipe n'est pas trouvée (chargement en cours)
   if (!team || !settings) {
@@ -206,7 +219,9 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
 
   // ÉCRAN FINALE (Phase 4)
   if (settings.current_phase === 4) {
-    const winner = teams.find(t => !t.is_eliminated) || teams.sort((a, b) => b.score - a.score)[0];
+    const winner = teams.find(t => t.id === settings.winner_team_id)
+      || teams.find(t => !t.is_eliminated)
+      || [...teams].sort((a, b) => b.score - a.score)[0];
     const isWinner = winner?.id === team.id;
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center bg-gray-900 absolute inset-0 z-50">
@@ -227,7 +242,8 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
 
   // ÉCRAN 3 : Manche Bonus (Départage / Mort Subite au Buzzer)
   if (settings.tie_breaker_mode) {
-    const isInTieBreaker = tiedTeamIds.length === 0 || tiedTeamIds.includes(teamId);
+    const isSaved = savedTeamIds.includes(teamId);
+    const isInTieBreaker = !isSaved && (tiedTeamIds.length === 0 || tiedTeamIds.includes(teamId));
     const hasFailedThisQuestion = failedTeamIds.includes(teamId);
     const hasCurrentTeamBuzzed = buzzedTeamId === teamId;
     const isOtherTeamBuzzed = buzzedTeamId !== null && buzzedTeamId !== teamId;
@@ -248,7 +264,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
         <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center">
           <div className="bg-green-950/60 p-8 rounded-3xl border-4 border-green-500 w-full max-w-md shadow-2xl backdrop-blur-md">
             <div className="text-6xl mb-4">🏆</div>
-            <h2 className="text-3xl text-yellow-400 font-paytone mb-2">Qualifiés !</h2>
+            <h2 className="text-3xl text-yellow-400 font-paytone mb-2">{isSaved ? 'Qualifiée !' : 'Qualifiés !'}</h2>
             <p className="text-white font-sans text-lg mb-4">
               Votre équipe est qualifiée pour la phase suivante !
             </p>
@@ -272,6 +288,12 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
         <p className="text-white/80 font-sans mb-8 uppercase tracking-widest font-bold text-sm">
           Le premier qui buzze donne sa réponse à l'oral
         </p>
+
+        {bonusQuestion?.photo_url && (
+          <div className="mb-6 w-full max-w-sm rounded-2xl overflow-hidden border-4 border-yellow-400/60 shadow-xl bg-black/50">
+            <img src={bonusQuestion.photo_url} alt="Photo du départage" className="w-full aspect-video object-cover" />
+          </div>
+        )}
         
         {hasCurrentTeamBuzzed ? (
           <div className="bg-yellow-500/20 p-10 rounded-[3rem] border-4 border-yellow-400 animate-pulse max-w-md shadow-2xl">
@@ -355,7 +377,9 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
 
   const submitAnswer = async (answer: string) => {
     if (isSubmitting || liveAnswer) return;
-    if (timeLeft <= 0) return; // Prevent answering if time is up
+    const startedAt = settings.question_started_at ? new Date(settings.question_started_at).getTime() : 0;
+    const deadline = startedAt && question ? startedAt + question.duration * 1000 : 0;
+    if (!startedAt || !question || Date.now() >= deadline || timeLeft <= 0) return;
     setIsSubmitting(true);
     
     const timeTaken = (Date.now() - startTime) / 1000;

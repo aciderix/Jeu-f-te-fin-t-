@@ -38,3 +38,35 @@ export function getDeterministicChoices(question: any): string[] {
   
   return selected;
 }
+
+export function normalizeAnswer(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+export function getLevenshteinDistance(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  const previousRow = Array.from({ length: a.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= b.length; row += 1) {
+    const currentRow = [row];
+    for (let column = 1; column <= a.length; column += 1) {
+      const substitutionCost = b[row - 1] === a[column - 1] ? 0 : 1;
+      currentRow[column] = Math.min(
+        currentRow[column - 1] + 1,
+        previousRow[column] + 1,
+        previousRow[column - 1] + substitutionCost
+      );
+    }
+    previousRow.splice(0, previousRow.length, ...currentRow);
+  }
+
+  return previousRow[a.length];
+}
+
+export function isAnswerCorrect(answer: string, expected: string): boolean {
+  const normalizedAnswer = normalizeAnswer(answer);
+  const normalizedExpected = normalizeAnswer(expected);
+  const maxTypos = normalizedExpected.length >= 6 ? 2 : 1;
+  return getLevenshteinDistance(normalizedAnswer, normalizedExpected) <= maxTypos;
+}

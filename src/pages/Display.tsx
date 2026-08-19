@@ -3,14 +3,51 @@ import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '../lib/supabaseClient';
 import { useGameState } from '../hooks/useGameState';
 import { useQuestions } from '../hooks/useQuestions';
-import { soundFX } from '../lib/soundEffects';
+import { useLiveAnswers } from '../hooks/useLiveAnswers';
+import { audioManager } from '../lib/soundEffects';
 import { Question } from '../types';
+import { useTieBreakerSession } from '../hooks/useTieBreakerSession';
 
-import { getDeterministicChoices } from '../lib/utils';
+import { getDeterministicChoices, isAnswerCorrect } from '../lib/utils';
+
+type RoundStatus = 'intro' | 'active' | 'time_up' | 'reveal' | 'phase_summary' | 'finale' | 'tie_breaker';
+
+interface ScoreCountUpProps {
+  start: number;
+  target: number;
+  active: boolean;
+}
+
+function ScoreCountUp({ start, target, active }: ScoreCountUpProps) {
+  const [displayScore, setDisplayScore] = useState(start);
+
+  useEffect(() => {
+    if (!active || start >= target) {
+      setDisplayScore(target);
+      return;
+    }
+
+    setDisplayScore(start);
+    const step = Math.max(1, Math.ceil((target - start) / 12));
+    const timer = window.setInterval(() => {
+      setDisplayScore(current => {
+        const next = Math.min(target, current + step);
+        if (next >= target) window.clearInterval(timer);
+        return next;
+      });
+    }, 45);
+
+    return () => window.clearInterval(timer);
+  }, [active, start, target]);
+
+  return <>{displayScore}</>;
+}
 
 export default function Display() {
-  const { settings, teams } = useGameState();
+  const { settings, teams, connectionStatus } = useGameState();
+  const { tieBreakerSession } = useTieBreakerSession();
   const { questions } = useQuestions();
+  const { liveAnswers } = useLiveAnswers();
   
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const [choices, setChoices] = useState<string[]>([]);
@@ -18,56 +55,232 @@ export default function Display() {
   const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
   const [rejectedNotice, setRejectedNotice] = useState<string | null>(null);
   const [currentBonusQuestion, setCurrentBonusQuestion] = useState<Question | null>(null);
-  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>(settings?.tie_breaker_teams || []);
+  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>([]);
+  const [savedTeamIds, setSavedTeamIds] = useState<string[]>([]);
+  const [failedTeamIds, setFailedTeamIds] = useState<string[]>([]);
+  const [imageLoadError, setImageLoadError] = useState(false);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [roundStatus, setRoundStatus] = useState<RoundStatus>('intro');
+  const [revealFrozen, setRevealFrozen] = useState(false);
+  const lastCountdownMarkRef = useRef<number | null>(null);
+  const lastTimeUpRoundRef = useRef<number | null>(null);
+  const lastRevealQuestionRef = useRef<string | null>(null);
+  const lastPhaseSummaryQuestionRef = useRef<string | null>(null);
+  const finalePlayedRef = useRef(false);
 
   // Sync with settings if reloaded
   useEffect(() => {
-    if (settings?.tie_breaker_teams) {
-      setTiedTeamIds(settings.tie_breaker_teams);
-    }
-  }, [settings?.tie_breaker_teams]);
-
-  const bgAudioRef = useRef<HTMLAudioElement | null>(null);
-  const suspenseAudioRef = useRef<HTMLAudioElement | null>(null);
+    setTiedTeamIds(tieBreakerSession.tied_team_ids);
+    setSavedTeamIds(tieBreakerSession.saved_team_ids);
+    setFailedTeamIds(tieBreakerSession.failed_team_ids);
+    setBuzzWinner(tieBreakerSession.buzzed_team_id);
+  }, [tieBreakerSession]);
 
   const regularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
   const bonusQuestions = questions.filter(q => q.phase === 0 || q.is_bonus);
 
   const currentQuestion = settings ? regularQuestions.find(q => q.order === settings.current_round) : null;
+  const activeTeams = teams.filter(team => !team.is_eliminated).sort((a, b) => b.score - a.score);
+  const phaseStandings = [...teams].sort((a, b) => b.score - a.score);
+  const answeredActiveTeamCount = liveAnswers.filter(answer => activeTeams.some(team => team.id === answer.team_id)).length;
+  const allActiveTeamsAnswered = activeTeams.length > 0 && answeredActiveTeamCount >= activeTeams.length;
+
+  const currentRegularIndex = currentQuestion
+    ? regularQuestions.findIndex(question => question.id === currentQuestion.id)
+    : -1;
+  const isPhaseEnd = currentQuestion
+    ? !regularQuestions[currentRegularIndex + 1] || regularQuestions[currentRegularIndex + 1].phase !== currentQuestion.phase
+    : false;
+  const currentBonusIndex = currentBonusQuestion
+    ? bonusQuestions.findIndex(question => question.id === currentBonusQuestion.id)
+    : -1;
+
+  const isFinale = settings?.current_phase === 4;
+  const displayStatus = isFinale ? 'finale' : settings?.tie_breaker_mode ? 'tie_breaker' : roundStatus;
+
+  const phaseLabel = currentQuestion?.phase === 1
+    ? 'PHASE 1 - 2 PROPOSITIONS'
+    : currentQuestion?.phase === 2
+    ? 'PHASE 2 - 4 PROPOSITIONS'
+    : 'PHASE 3 - REPONSE LIBRE';
+  const instructionLabel = currentQuestion?.phase === 1
+    ? 'Choisissez parmi les 2 réponses'
+    : currentQuestion?.phase === 2
+    ? 'Choisissez parmi les 4 réponses'
+    : 'Réponse libre sur les téléphones';
+  const formattedTime = `00:${Math.max(0, Math.ceil(timeLeft)).toString().padStart(2, '0')}`;
+  const activeTieTeamCount = tiedTeamIds.filter(teamId => !savedTeamIds.includes(teamId)).length;
+  const correctTeamIds = currentQuestion
+    ? liveAnswers
+      .filter(answer => isAnswerCorrect(answer.answer, currentQuestion.correct_answer))
+      .map(answer => answer.team_id)
+    : [];
+  const phaseTie = currentQuestion?.phase === 1 && activeTeams.length >= 4
+    ? activeTeams[2].score === activeTeams[3].score
+    : currentQuestion?.phase === 2 && activeTeams.length >= 3
+    ? activeTeams[1].score === activeTeams[2].score
+    : currentQuestion?.phase === 3 && activeTeams.length >= 2
+    ? activeTeams[0].score === activeTeams[1].score
+    : false;
+  const phaseEliminated = currentQuestion?.phase === 1 && activeTeams.length >= 4
+    ? activeTeams[3]
+    : currentQuestion?.phase === 2 && activeTeams.length >= 3
+    ? activeTeams[2]
+    : null;
+  const phaseQualifiedTeams = phaseEliminated
+    ? activeTeams.filter(team => team.id !== phaseEliminated.id)
+    : activeTeams;
+  const phaseWinner = currentQuestion?.phase === 3 && !phaseTie ? activeTeams[0] : null;
+  const phaseTiedTeams = currentQuestion?.phase === 1 && activeTeams.length >= 4 && phaseTie
+    ? activeTeams.filter(team => team.score === activeTeams[2].score)
+    : currentQuestion?.phase === 2 && activeTeams.length >= 3 && phaseTie
+    ? activeTeams.filter(team => team.score === activeTeams[1].score)
+    : currentQuestion?.phase === 3 && activeTeams.length >= 2 && phaseTie
+    ? activeTeams.filter(team => team.score === activeTeams[0].score)
+    : [];
+  const roundStatusLabel: Record<RoundStatus, string> = {
+    intro: 'PRÉPAREZ-VOUS',
+    active: 'EN JEU',
+    time_up: 'TEMPS ÉCOULÉ',
+    reveal: 'RÉVÉLATION',
+    phase_summary: 'FIN DE PHASE',
+    finale: 'GRANDE FINALE',
+    tie_breaker: 'DÉPARTAGE EN COURS'
+  };
 
   // Question bonus active
   useEffect(() => {
-    if (settings?.tie_breaker_mode && !currentBonusQuestion && bonusQuestions.length > 0) {
-      setCurrentBonusQuestion(bonusQuestions[0]);
+    if (settings?.tie_breaker_mode) {
+      const persistedQuestion = bonusQuestions.find(q => q.id === tieBreakerSession.question_id);
+      setCurrentBonusQuestion(persistedQuestion || bonusQuestions[0] || null);
     }
-  }, [settings?.tie_breaker_mode, bonusQuestions, currentBonusQuestion]);
+  }, [settings?.tie_breaker_mode, bonusQuestions, tieBreakerSession.question_id]);
 
-  // Gestion des pistes audio
   useEffect(() => {
-    if (!audioEnabled) return;
+    setImageLoadError(false);
+    setImageLoading(Boolean(currentQuestion?.photo_url || currentBonusQuestion?.photo_url));
+  }, [currentQuestion?.id, currentBonusQuestion?.id]);
 
+  // Moteur local des sous-etats d'une manche. Les changements de question
+  // relancent l'introduction; les signaux persistés pilotent ensuite le reste.
+  useEffect(() => {
+    if (!settings?.is_playing || settings.current_phase === 4) {
+      setRoundStatus(settings?.current_phase === 4 ? 'finale' : 'intro');
+      return;
+    }
+
+    if (settings.tie_breaker_mode) {
+      setRoundStatus('tie_breaker');
+      return;
+    }
+
+    setRoundStatus('intro');
+    const introTimer = window.setTimeout(() => {
+      if (settings.show_results) {
+        setRoundStatus('reveal');
+      } else if (settings.question_started_at) {
+        audioManager.playStart();
+        setRoundStatus('active');
+      }
+    }, 1500);
+
+    return () => window.clearTimeout(introTimer);
+  }, [settings?.is_playing, settings?.current_round, settings?.current_phase, settings?.tie_breaker_mode, currentQuestion?.id]);
+
+  useEffect(() => {
+    if (!settings?.question_started_at || settings.show_results || settings.tie_breaker_mode || roundStatus !== 'intro') return;
+    audioManager.playStart();
+    setRoundStatus('active');
+  }, [settings?.question_started_at, settings?.show_results, settings?.tie_breaker_mode, roundStatus]);
+
+  useEffect(() => {
+    if (settings?.tie_breaker_mode || settings?.current_phase === 4) return;
+
+    if (settings?.show_results && roundStatus !== 'phase_summary') {
+      setRoundStatus('reveal');
+    } else if (!settings?.show_results && roundStatus === 'reveal') {
+      setRoundStatus('active');
+    }
+  }, [settings?.show_results, settings?.tie_breaker_mode, settings?.current_phase, roundStatus]);
+
+  useEffect(() => {
+    if (roundStatus !== 'active' || timeLeft > 0 || settings?.show_results || !settings?.question_started_at) return;
+    setRoundStatus('time_up');
+  }, [roundStatus, timeLeft, settings?.show_results, settings?.question_started_at]);
+
+  useEffect(() => {
+    if (roundStatus !== 'reveal') {
+      setRevealFrozen(false);
+      return;
+    }
+
+    setRevealFrozen(true);
+    const freezeTimer = window.setTimeout(() => setRevealFrozen(false), 200);
+    return () => window.clearTimeout(freezeTimer);
+  }, [roundStatus]);
+
+  useEffect(() => {
+    if (roundStatus !== 'reveal' || !isPhaseEnd) return;
+    const summaryTimer = window.setTimeout(() => setRoundStatus('phase_summary'), 3000);
+    return () => window.clearTimeout(summaryTimer);
+  }, [roundStatus, isPhaseEnd]);
+
+  useEffect(() => {
+    if (!settings?.is_playing || !currentQuestion || settings.tie_breaker_mode) return;
+    audioManager.playNewRound();
+    lastCountdownMarkRef.current = null;
+    lastTimeUpRoundRef.current = null;
+    lastRevealQuestionRef.current = null;
+    lastPhaseSummaryQuestionRef.current = null;
+  }, [currentQuestion?.id, settings?.is_playing, settings?.tie_breaker_mode]);
+
+  useEffect(() => {
+    audioManager.configureMusic(settings?.bg_audio_url, settings?.suspense_audio_url);
     const isWaiting = !settings?.is_playing;
     const isThinking = settings?.is_playing && !settings?.show_results && !settings?.tie_breaker_mode;
+    audioManager.setMusicMode(isWaiting ? 'ambient' : isThinking ? 'suspense' : 'none');
+  }, [settings?.bg_audio_url, settings?.suspense_audio_url, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode]);
 
-    if (bgAudioRef.current && settings?.bg_audio_url) {
-      if (isWaiting) {
-        bgAudioRef.current.play().catch(() => {});
-      } else {
-        bgAudioRef.current.pause();
-        bgAudioRef.current.currentTime = 0;
+  useEffect(() => {
+    if (displayStatus === 'active' && timeLeft > 0) {
+      const seconds = Math.ceil(timeLeft);
+      const shouldTick = seconds <= 5 || (seconds <= 10 && seconds % 2 === 0);
+      if (shouldTick && lastCountdownMarkRef.current !== seconds) {
+        lastCountdownMarkRef.current = seconds;
+        audioManager.playCountdownTick(seconds <= 5);
       }
     }
 
-    if (suspenseAudioRef.current && settings?.suspense_audio_url) {
-      if (isThinking) {
-        suspenseAudioRef.current.play().catch(() => {});
-      } else {
-        suspenseAudioRef.current.pause();
-        suspenseAudioRef.current.currentTime = 0;
-      }
+    if (displayStatus === 'time_up' && settings?.current_round !== undefined && lastTimeUpRoundRef.current !== settings.current_round) {
+      lastTimeUpRoundRef.current = settings.current_round;
+      audioManager.playTimeUp();
     }
-  }, [audioEnabled, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, settings?.bg_audio_url, settings?.suspense_audio_url]);
+  }, [displayStatus, timeLeft, settings?.current_round]);
 
+  useEffect(() => {
+    if (displayStatus === 'reveal' && currentQuestion && lastRevealQuestionRef.current !== currentQuestion.id) {
+      lastRevealQuestionRef.current = currentQuestion.id;
+      if (correctTeamIds.length > 0) audioManager.playRevealCorrect();
+    }
+  }, [displayStatus, currentQuestion?.id, correctTeamIds.length]);
+
+  useEffect(() => {
+    if (displayStatus === 'phase_summary' && currentQuestion && lastPhaseSummaryQuestionRef.current !== currentQuestion.id) {
+      lastPhaseSummaryQuestionRef.current = currentQuestion.id;
+      audioManager.playPhaseEnd(phaseTie ? 'tie' : phaseEliminated ? 'eliminated' : 'qualified');
+    }
+  }, [displayStatus, currentQuestion?.id, phaseTie, phaseEliminated]);
+
+  useEffect(() => {
+    if (isFinale && !finalePlayedRef.current) {
+      finalePlayedRef.current = true;
+      audioManager.playVictory();
+    } else if (!isFinale) {
+      finalePlayedRef.current = false;
+    }
+  }, [isFinale]);
+
+  // Gestion des pistes audio
   // Gestion du Buzzer et des événements en temps réel
   useEffect(() => {
     const channel = supabase.channel('buzzer')
@@ -75,13 +288,13 @@ export default function Display() {
         const teamId = payload.payload?.teamId;
         if (teamId) {
           setBuzzWinner(teamId);
-          soundFX.playBuzzer();
+          audioManager.playBuzzer();
           setRejectedNotice(null);
         }
       })
       .on('broadcast', { event: 'buzz_rejected' }, (payload) => {
         const failedTeamId = payload.payload?.failedTeamId;
-        soundFX.playWrong();
+        audioManager.playWrong();
         setBuzzWinner(null);
         setRejectedNotice(`Mauvaise réponse de l'Équipe ${failedTeamId} ! Le buzzer reste ouvert pour les autres.`);
         setTimeout(() => {
@@ -106,10 +319,12 @@ export default function Display() {
         }
       })
       .on('broadcast', { event: 'tie_breaker_finished' }, () => {
-        soundFX.playCorrect();
+        audioManager.playRevealCorrect();
         setBuzzWinner(null);
         setRejectedNotice(null);
         setTiedTeamIds([]);
+        setSavedTeamIds([]);
+        setFailedTeamIds([]);
       })
       .subscribe();
 
@@ -124,6 +339,8 @@ export default function Display() {
       setBuzzWinner(null);
       setRejectedNotice(null);
       setTiedTeamIds([]);
+      setSavedTeamIds([]);
+      setFailedTeamIds([]);
     }
   }, [settings?.tie_breaker_mode]);
 
@@ -148,7 +365,7 @@ export default function Display() {
 
   // Décompte du Timer
   useEffect(() => {
-    if (settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode && timeLeft > 0) {
+    if (settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode && roundStatus === 'active' && settings.question_started_at && timeLeft > 0) {
       const timer = setInterval(() => {
         if (settings?.question_started_at && currentQuestion) {
            const start = new Date(settings.question_started_at).getTime();
@@ -160,43 +377,20 @@ export default function Display() {
       }, 100);
       return () => clearInterval(timer);
     }
-  }, [settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, timeLeft, settings?.question_started_at, currentQuestion]);
+  }, [settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, roundStatus, timeLeft, settings?.question_started_at, currentQuestion]);
 
   // Éléments Audio Communs
   const AudioElements = (
     <>
-      {settings?.bg_audio_url && (
-        <audio 
-          ref={bgAudioRef} 
-          src={settings.bg_audio_url} 
-          loop 
-          preload="auto" 
-        />
-      )}
-      {settings?.suspense_audio_url && (
-        <audio 
-          ref={suspenseAudioRef} 
-          src={settings.suspense_audio_url} 
-          loop 
-          preload="auto" 
-        />
-      )}
       <button 
         onClick={() => {
-          setAudioEnabled(!audioEnabled);
-          if (!audioEnabled) {
-            if (bgAudioRef.current && settings?.bg_audio_url && !settings?.is_playing) {
-              bgAudioRef.current.play().catch(() => {});
-            }
-          } else {
-            if (bgAudioRef.current) bgAudioRef.current.pause();
-            if (suspenseAudioRef.current) suspenseAudioRef.current.pause();
-          }
+          const enabled = audioManager.toggleEnabled();
+          setAudioEnabled(enabled);
         }}
         className="fixed bottom-4 right-4 z-50 bg-black/60 hover:bg-black/80 text-white/70 hover:text-white p-3 rounded-full border border-white/20 backdrop-blur-md transition-all shadow-lg text-xs flex items-center gap-2"
         title={audioEnabled ? "Couper le son" : "Activer le son"}
       >
-        {audioEnabled ? (
+        {audioEnabled && audioManager.isEnabled ? (
           <>
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
             <span className="font-sans">Son ON</span>
@@ -259,7 +453,9 @@ export default function Display() {
 
   // 1.5. ÉCRAN DE FIN DE PARTIE (Phase 4)
   if (settings?.current_phase === 4) {
-    const winner = teams.find(t => !t.is_eliminated) || teams.sort((a, b) => b.score - a.score)[0];
+    const winner = teams.find(t => t.id === settings.winner_team_id)
+      || teams.find(t => !t.is_eliminated)
+      || [...teams].sort((a, b) => b.score - a.score)[0];
     
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center relative overflow-hidden bg-sunburst">
@@ -292,8 +488,77 @@ export default function Display() {
                 Avec {winner?.score} points !
               </p>
             </div>
+            <div className="mt-8 w-full max-w-xl rounded-2xl border border-white/15 bg-black/50 p-4 text-left">
+              <p className="mb-3 text-center text-xs font-bold uppercase tracking-[0.25em] text-white/50">Classement final</p>
+              <div className="grid gap-2">
+                {[...teams].sort((a, b) => b.score - a.score).map((team, index) => (
+                  <div key={team.id} className={`flex items-center justify-between rounded-lg px-4 py-2 ${team.id === winner?.id ? 'bg-yellow-400/20 text-yellow-200' : 'bg-white/5 text-white/70'}`}>
+                    <span className="font-paytone">{index + 1}. {team.name || `Équipe ${team.id}`}</span>
+                    <span className="font-paytone">{team.score} pts</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </motion.div>
         </div>
+      </div>
+    );
+  }
+
+  if (roundStatus === 'phase_summary' && currentQuestion && !settings?.tie_breaker_mode) {
+    return (
+      <div className="flex min-h-screen w-full flex-col items-center justify-center bg-sunburst p-6 text-center">
+        {AudioElements}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.92 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="z-10 w-full max-w-4xl rounded-[2rem] border-4 border-yellow-400 bg-black/75 p-6 shadow-[0_0_60px_rgba(234,179,8,0.45)] backdrop-blur-md md:p-10"
+        >
+          <p className="mb-2 text-sm font-bold uppercase tracking-[0.3em] text-yellow-300">Phase {currentQuestion.phase}</p>
+          <h1 className="mb-8 font-paytone text-5xl uppercase tracking-wider text-white md:text-7xl">FIN DE PHASE</h1>
+
+          <div className="mb-8 rounded-2xl border border-white/15 bg-white/5 p-4">
+            <p className="mb-4 text-xs font-bold uppercase tracking-[0.25em] text-white/50">Classement</p>
+            <div className="grid gap-3">
+              {phaseStandings.map((team, index) => (
+                <motion.div
+                  key={team.id}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: index * 0.08 }}
+                  className={`flex items-center justify-between rounded-xl border-2 px-4 py-3 text-left ${team.is_eliminated ? 'border-red-500/50 bg-red-950/30 opacity-70' : index === 0 ? 'border-yellow-400 bg-yellow-400/15' : 'border-white/10 bg-black/30'}`}
+                >
+                  <span className="font-paytone text-lg text-white">{index + 1}. {team.name || `Équipe ${team.id}`} {team.is_eliminated ? ' - ÉLIMINÉE' : ''}</span>
+                  <span className="font-paytone text-2xl text-yellow-300">{team.score}</span>
+                </motion.div>
+              ))}
+            </div>
+          </div>
+
+          <div className="mb-6 rounded-xl border border-green-400/40 bg-green-950/30 p-3 text-left">
+            <p className="text-xs font-bold uppercase tracking-widest text-green-300">Équipes qualifiées</p>
+            <p className="mt-1 font-paytone text-lg text-white">
+              {phaseTie ? activeTeams.filter(team => !phaseTiedTeams.some(tiedTeam => tiedTeam.id === team.id)).map(team => team.name || `Équipe ${team.id}`).join(' · ') || 'Départage nécessaire' : phaseQualifiedTeams.map(team => team.name || `Équipe ${team.id}`).join(' · ')}
+            </p>
+          </div>
+
+          {phaseTie ? (
+            <div className="rounded-2xl border-2 border-red-500 bg-red-950/50 p-4">
+              <p className="font-paytone text-3xl uppercase text-red-300">ÉGALITÉ POUR LA QUALIFICATION</p>
+              <p className="mt-2 text-sm font-bold uppercase tracking-widest text-yellow-300">Le maître du jeu doit lancer le départage au buzzer</p>
+              <p className="mt-1 text-xs uppercase tracking-widest text-white/65">La mort subite départagera les équipes à égalité</p>
+            </div>
+          ) : phaseEliminated ? (
+            <div className="rounded-2xl border-2 border-blue-400 bg-blue-950/50 p-4">
+              <p className="font-paytone text-2xl uppercase text-white">{phaseEliminated.name || `Équipe ${phaseEliminated.id}`} éliminée</p>
+              <p className="mt-1 text-sm font-bold uppercase tracking-widest text-green-300">Les autres équipes sont qualifiées</p>
+            </div>
+          ) : phaseWinner ? (
+            <div className="rounded-2xl border-2 border-yellow-400 bg-yellow-950/40 p-4">
+              <p className="font-paytone text-2xl uppercase text-yellow-300">{phaseWinner.name || `Équipe ${phaseWinner.id}`} prend la tête</p>
+            </div>
+          ) : null}
+        </motion.div>
       </div>
     );
   }
@@ -322,7 +587,97 @@ export default function Display() {
         </video>
       )}
 
+      {displayStatus === 'intro' && !isTieBreaker && currentQuestion && (
+        <motion.div
+          initial={{ opacity: 0, y: 18, scale: 0.96 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -12 }}
+          className="pointer-events-none absolute left-1/2 top-1/2 z-20 w-[min(90%,52rem)] -translate-x-1/2 -translate-y-1/2 text-center"
+        >
+          <div className="rounded-[2rem] border-4 border-yellow-400 bg-black/80 px-6 py-8 shadow-[0_0_45px_rgba(234,179,8,0.38)] backdrop-blur-md md:px-12 md:py-10">
+            <p className="mb-2 text-sm font-bold uppercase tracking-[0.35em] text-yellow-300">Nouvelle séquence</p>
+            <h2 className="font-paytone text-5xl uppercase tracking-wider text-white md:text-8xl">Phase {currentQuestion.phase} !</h2>
+            <p className="mt-4 font-paytone text-2xl uppercase tracking-widest text-yellow-300 md:text-4xl">
+              {currentQuestion.phase === 1 ? 'Choisissez parmi 2 réponses' : currentQuestion.phase === 2 ? 'Choisissez parmi 4 réponses' : 'Réponse libre sur les téléphones'}
+            </p>
+            <p className="mt-5 text-xs font-bold uppercase tracking-[0.28em] text-white/65">Le top départ arrive dans un instant</p>
+          </div>
+        </motion.div>
+      )}
+
+      {displayStatus === 'time_up' && (
+        <motion.div
+          initial={{ opacity: 0, y: -12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="pointer-events-none absolute left-1/2 top-28 z-30 w-[min(92%,42rem)] -translate-x-1/2"
+        >
+          <div className="rounded-2xl border-2 border-yellow-400/80 bg-black/85 px-6 py-3 text-center shadow-[0_0_28px_rgba(234,179,8,0.35)] backdrop-blur-md">
+            <p className="font-paytone text-3xl uppercase tracking-[0.18em] text-yellow-300 md:text-5xl">TEMPS ÉCOULÉ</p>
+            <p className="mt-1 text-xs font-bold uppercase tracking-[0.22em] text-white/65">Réponses figées · révélation à venir</p>
+          </div>
+        </motion.div>
+      )}
+
+      {revealFrozen && (
+        <div className="fixed inset-0 z-40 bg-black/35 backdrop-blur-[1px]" aria-hidden="true" />
+      )}
+
       <div className="z-10 flex flex-col h-full flex-grow">
+
+        {/* HUD de régie : manche, phase, consigne et état local */}
+        <div className="w-full max-w-6xl mx-auto mb-4 grid grid-cols-[auto_1fr_auto_auto] items-center gap-4 rounded-2xl border-2 border-white/15 bg-black/55 px-4 py-3 shadow-xl backdrop-blur-md">
+          <div className="text-left">
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-yellow-300/80">{roundStatusLabel[displayStatus]}</p>
+            <p className="text-lg md:text-2xl font-paytone text-white">
+              {isTieBreaker ? 'DÉPARTAGE' : `MANCHE ${Math.max(1, currentRegularIndex + 1)} / ${regularQuestions.length}`}
+            </p>
+          </div>
+
+          <div className="min-w-0 text-center">
+            <p className="truncate text-sm md:text-lg font-paytone uppercase tracking-wider text-yellow-300">
+              {isTieBreaker ? `DÉPARTAGE - ${tieBreakerSession.target_spots} PLACE${tieBreakerSession.target_spots > 1 ? 'S' : ''} À PRENDRE` : phaseLabel}
+            </p>
+            <p className="truncate text-xs md:text-sm font-sans font-bold uppercase tracking-widest text-white/75">
+              {isTieBreaker ? 'Le premier qui buzze répond à l’oral' : instructionLabel}
+            </p>
+            {!isTieBreaker && (
+              <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-white/45">
+                Réponses : {answeredActiveTeamCount} / {activeTeams.length} équipes en jeu
+              </p>
+            )}
+          </div>
+
+          <div className="text-right">
+            <p className={`text-[10px] font-bold uppercase tracking-widest ${connectionStatus === 'connected' ? 'text-green-300' : 'text-yellow-300'}`}>
+              {connectionStatus === 'connected' ? 'Synchronisé' : connectionStatus === 'reconnecting' ? 'Reconnexion...' : 'Connexion...'}
+            </p>
+          </div>
+
+          {!isTieBreaker ? (
+            <div className="text-right">
+              <p className="font-sans text-[10px] font-bold uppercase tracking-widest text-white/50">Chrono</p>
+              <p className={`font-paytone text-3xl md:text-4xl tabular-nums ${timeLeft <= 5 ? 'text-red-400 animate-pulse' : 'text-white'}`}>
+                {formattedTime}
+              </p>
+            </div>
+          ) : (
+            <div className="text-right">
+              <p className="font-sans text-[10px] font-bold uppercase tracking-widest text-white/50">Question bonus</p>
+              <p className="font-paytone text-3xl text-yellow-300">{currentBonusIndex >= 0 ? currentBonusIndex + 1 : '-'}</p>
+            </div>
+          )}
+        </div>
+
+        {!isTieBreaker && roundStatus === 'active' && allActiveTeamsAnswered && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mx-auto mb-4 w-full max-w-3xl rounded-xl border-2 border-green-400/70 bg-green-950/60 px-4 py-2 text-center shadow-[0_0_20px_rgba(74,222,128,0.2)]"
+          >
+            <p className="font-paytone text-lg uppercase tracking-wider text-green-300">Toutes les équipes ont répondu</p>
+            <p className="text-xs font-bold uppercase tracking-widest text-white/70">Le maître du jeu peut révéler les résultats</p>
+          </motion.div>
+        )}
         
         {/* En-tête : Scores des 4 équipes (Strictement identique) */}
         <div className="grid grid-cols-4 gap-4 mb-6">
@@ -336,6 +691,10 @@ export default function Display() {
             const isEliminated = team.is_eliminated;
             const isTied = isTieBreaker && (tiedTeamIds.length === 0 || tiedTeamIds.includes(team.id));
             const hasBuzzed = buzzWinner === team.id;
+            const isSaved = isTieBreaker && savedTeamIds.includes(team.id);
+            const isFailed = isTieBreaker && failedTeamIds.includes(team.id);
+            const earnedPoint = !isTieBreaker && correctTeamIds.includes(team.id);
+            const scoreBeforeReveal = Math.max(0, team.score - (earnedPoint ? 1 : 0));
             
             return (
               <div 
@@ -345,6 +704,10 @@ export default function Display() {
                     ? 'bg-gray-800 border-gray-600 opacity-60 grayscale' 
                     : hasBuzzed 
                     ? `${teamStyles[team.id]} ring-4 ring-yellow-400 scale-105 shadow-[0_0_30px_rgba(234,179,8,0.8)]`
+                    : isSaved
+                    ? 'bg-green-700 border-green-300 shadow-[0_0_20px_rgba(34,197,94,0.5)]'
+                    : isFailed
+                    ? 'bg-red-900 border-red-500 opacity-70'
                     : isTied
                     ? `${teamStyles[team.id]} shadow-[0_0_20px_rgba(234,179,8,0.5)]`
                     : teamStyles[team.id]
@@ -364,9 +727,22 @@ export default function Display() {
 
                 <span className="text-xl md:text-2xl font-bold font-sans text-white uppercase tracking-wider truncate w-full text-center">
                   {team.name || `Équipe ${team.id}`}
+                  {displayStatus === 'reveal' && earnedPoint && (
+                    <motion.span
+                      initial={{ opacity: 0, y: 8, scale: 0.7 }}
+                      animate={{ opacity: 1, y: -8, scale: 1 }}
+                      className="ml-3 inline-block text-2xl font-paytone text-green-300 drop-shadow-[0_0_10px_rgba(74,222,128,0.9)]"
+                    >
+                      +1
+                    </motion.span>
+                  )}
                 </span>
                 <span className="text-4xl md:text-5xl font-paytone text-yellow-300 drop-shadow-md">
-                  {team.score}
+                  <ScoreCountUp
+                    start={scoreBeforeReveal}
+                    target={team.score}
+                    active={displayStatus === 'reveal' && earnedPoint}
+                  />
                 </span>
               </div>
             );
@@ -400,26 +776,35 @@ export default function Display() {
               <div className="bg-yellow-500 p-3 rounded-[3rem] shadow-[0_0_40px_rgba(234,179,8,0.4)] border-4 border-yellow-300">
                 <div className="border-4 border-dashed border-yellow-800/30 p-2 rounded-[2.5rem] bg-black">
                   <div className="relative overflow-hidden rounded-[2rem] w-full max-w-4xl aspect-[4/3] md:aspect-video flex items-center justify-center bg-gray-900 border-4 border-white/10">
-                    {activeDisplayQuestion?.photo_url ? (
+                    {activeDisplayQuestion?.photo_url && !imageLoadError ? (
                       <img 
                         src={activeDisplayQuestion.photo_url} 
                         alt="Devinette" 
-                        className="w-full h-full object-cover"
+                        className="w-full h-full object-contain bg-black p-2"
+                        onLoad={() => setImageLoading(false)}
+                        onError={() => setImageLoadError(true)}
                       />
                     ) : (
-                      <span className="text-white/50 text-2xl font-paytone">
-                        {isTieBreaker ? "Photo Manche Bonus" : "Photo manquante"}
-                      </span>
+                      <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-gradient-to-br from-gray-900 via-gray-800 to-black p-8 text-center">
+                        <span className="text-5xl" aria-hidden="true">▧</span>
+                        <span className="text-xl font-paytone text-white/70">
+                          {imageLoading ? 'Chargement de l’image...' : imageLoadError ? 'Image indisponible' : isTieBreaker ? 'Photo manche bonus' : 'Photo manquante'}
+                        </span>
+                        <span className="max-w-md text-xs font-sans uppercase tracking-widest text-white/40">
+                          {imageLoading ? 'Préparation de la photo.' : imageLoadError ? 'Le jeu continue, consultez votre écran.' : 'Aucune image configurée pour cette question.'}
+                        </span>
+                      </div>
                     )}
                     
                     {/* Overlay de Révélation (Phase 3 texte en fin de manche) */}
-                    {!isTieBreaker && settings.current_phase === 3 && settings.show_results && activeDisplayQuestion && (
+                    {!isTieBreaker && displayStatus === 'reveal' && activeDisplayQuestion && (
                        <motion.div 
-                         initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                         initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }}
                          className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center backdrop-blur-sm"
                        >
-                         <p className="text-3xl text-yellow-400 font-paytone uppercase mb-4">La réponse était :</p>
-                         <p className="text-6xl text-white font-bold drop-shadow-[0_0_20px_rgba(255,255,255,0.5)]">
+                         <p className="mb-3 text-2xl font-paytone uppercase text-green-300 md:text-4xl">✓ BONNE RÉPONSE</p>
+                         <p className="mb-2 text-sm font-bold uppercase tracking-widest text-yellow-400">La réponse était</p>
+                         <p className="text-4xl font-bold text-white drop-shadow-[0_0_20px_rgba(255,255,255,0.5)] md:text-6xl">
                            {activeDisplayQuestion.correct_answer}
                          </p>
                        </motion.div>
@@ -446,7 +831,7 @@ export default function Display() {
           </motion.div>
         )}
 
-        {/* Zone Basse : Choix Multiples OU Bandeau Manche Bonus (Même style graphique) */}
+        {/* Zone Basse : Choix Multiples, réponse libre ou départage */}
         {isTieBreaker ? (
           /* MANCHE BONUS : Bandeau harmonieux dans le même esprit que le reste du jeu */
           <div className="w-full max-w-4xl mx-auto">
@@ -470,14 +855,22 @@ export default function Display() {
               <div className="bg-black/50 p-6 rounded-3xl border-2 border-yellow-500/40 text-center shadow-xl backdrop-blur-md flex flex-col items-center gap-2">
                 <div className="flex items-center gap-2 text-yellow-400 font-paytone text-2xl md:text-3xl uppercase tracking-wider">
                   <span className="animate-bounce">⚡</span>
-                  <span>MANCHE BONUS : DÉPARTAGE AU BUZZER</span>
+                  <span>DÉPARTAGE - {tieBreakerSession.target_spots} PLACE{tieBreakerSession.target_spots > 1 ? 'S' : ''} À PRENDRE</span>
                   <span className="animate-bounce">⚡</span>
                 </div>
                 <p className="text-white/80 text-sm md:text-base font-sans">
-                  Le premier qui buzze sur son écran donne sa réponse à l'oral !
+                  QUESTION BONUS {currentBonusIndex >= 0 ? currentBonusIndex + 1 : '-'} - {activeTieTeamCount} ÉQUIPE{activeTieTeamCount > 1 ? 'S' : ''} EN LICE
                 </p>
               </div>
             )}
+          </div>
+        ) : settings.current_phase === 3 ? (
+          <div className="w-full max-w-4xl mx-auto bg-black/55 p-6 rounded-3xl border-2 border-blue-400/60 text-center shadow-xl backdrop-blur-md">
+            <p className="text-2xl md:text-4xl font-paytone uppercase tracking-wider text-yellow-300">QUI EST-CE ?</p>
+            <p className="mt-1 text-sm md:text-base font-sans font-bold uppercase tracking-widest text-white/80">Répondez sur votre écran</p>
+            <p className="mt-3 text-lg font-paytone text-white">
+              {liveAnswers.length} / {teams.length} réponses enregistrées
+            </p>
           </div>
         ) : (
           /* MANCHES NORMALES : Propositions (Phases 1 et 2) */
@@ -486,7 +879,7 @@ export default function Display() {
               <AnimatePresence>
                 {choices.map((choice) => {
                   const isCorrect = choice === currentQuestion?.correct_answer;
-                  const showReveal = settings.show_results;
+                  const showReveal = displayStatus === 'reveal';
                   
                   let btnClasses = "bg-blue-900/80 border-blue-500 text-white shadow-[0_8px_0_rgb(30,58,138)]";
                   
@@ -503,8 +896,13 @@ export default function Display() {
                       key={choice}
                       initial={{ opacity: 0, y: 20 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className={`flex items-center justify-center p-6 rounded-2xl border-4 transition-all duration-500 text-center ${btnClasses}`}
+                      className={`relative flex items-center justify-center p-6 rounded-2xl border-4 transition-all duration-500 text-center ${btnClasses} ${displayStatus === 'time_up' ? 'grayscale' : ''}`}
                     >
+                      {showReveal && isCorrect && (
+                        <span className="absolute -top-4 rounded-full border-2 border-green-200 bg-green-500 px-4 py-1 text-xs font-paytone uppercase text-white shadow-lg">
+                          ✓ Bonne réponse
+                        </span>
+                      )}
                       <span className="text-2xl md:text-3xl font-bold font-sans drop-shadow-md break-words">{choice}</span>
                     </motion.div>
                   );

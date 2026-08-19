@@ -7,6 +7,7 @@ export function useGameState() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'reconnecting' | 'error'>('connecting');
 
   useEffect(() => {
     // Prevent fetching if Supabase is not properly configured
@@ -56,7 +57,10 @@ export function useGameState() {
           setSettings(payload.new as GameSettings);
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') setConnectionStatus('connected');
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setConnectionStatus('reconnecting');
+      });
 
     const teamsSubscription = supabase
       .channel(`teams_channel_${hookId}`)
@@ -89,5 +93,5 @@ export function useGameState() {
     };
   }, []);
 
-  return { settings, teams, loading, error };
+  return { settings, teams, loading, error, connectionStatus };
 }
