@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '../lib/supabaseClient';
 import { useGameState } from '../hooks/useGameState';
 import { useQuestions } from '../hooks/useQuestions';
+import { soundFX } from '../lib/soundEffects';
+import { Question } from '../types';
 
 export default function Display() {
   const { settings, teams } = useGameState();
@@ -12,20 +14,32 @@ export default function Display() {
   const [choices, setChoices] = useState<string[]>([]);
   const [buzzWinner, setBuzzWinner] = useState<string | null>(null);
   const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
+  const [rejectedNotice, setRejectedNotice] = useState<string | null>(null);
+  const [currentBonusQuestion, setCurrentBonusQuestion] = useState<Question | null>(null);
+  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>([]);
 
   const bgAudioRef = useRef<HTMLAudioElement | null>(null);
   const suspenseAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  const currentQuestion = settings ? questions.find(q => q.order === settings.current_round) : null;
+  const regularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
+  const bonusQuestions = questions.filter(q => q.phase === 0 || q.is_bonus);
 
-  // Gestion des pistes audio (Musique d'accueil vs Musique de suspense)
+  const currentQuestion = settings ? regularQuestions.find(q => q.order === settings.current_round) : null;
+
+  // Question bonus active
+  useEffect(() => {
+    if (settings?.tie_breaker_mode && !currentBonusQuestion && bonusQuestions.length > 0) {
+      setCurrentBonusQuestion(bonusQuestions[0]);
+    }
+  }, [settings?.tie_breaker_mode, bonusQuestions, currentBonusQuestion]);
+
+  // Gestion des pistes audio
   useEffect(() => {
     if (!audioEnabled) return;
 
-    const isWaiting = !settings?.is_playing && !settings?.tie_breaker_mode;
+    const isWaiting = !settings?.is_playing;
     const isThinking = settings?.is_playing && !settings?.show_results && !settings?.tie_breaker_mode;
 
-    // Musique d'ambiance d'accueil / attente
     if (bgAudioRef.current && settings?.bg_audio_url) {
       if (isWaiting) {
         bgAudioRef.current.play().catch(() => {});
@@ -35,7 +49,6 @@ export default function Display() {
       }
     }
 
-    // Musique de suspense pendant le chrono
     if (suspenseAudioRef.current && settings?.suspense_audio_url) {
       if (isThinking) {
         suspenseAudioRef.current.play().catch(() => {});
@@ -46,11 +59,48 @@ export default function Display() {
     }
   }, [audioEnabled, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, settings?.bg_audio_url, settings?.suspense_audio_url]);
 
-  // Gestion du Buzzer en temps réel
+  // Gestion du Buzzer et des événements en temps réel
   useEffect(() => {
     const channel = supabase.channel('buzzer')
       .on('broadcast', { event: 'buzz' }, (payload) => {
-        setBuzzWinner((current) => current ? current : payload.payload.teamId);
+        const teamId = payload.payload?.teamId;
+        if (teamId) {
+          setBuzzWinner(teamId);
+          soundFX.playBuzzer();
+          setRejectedNotice(null);
+        }
+      })
+      .on('broadcast', { event: 'buzz_rejected' }, (payload) => {
+        const failedTeamId = payload.payload?.failedTeamId;
+        soundFX.playWrong();
+        setBuzzWinner(null);
+        setRejectedNotice(`Mauvaise réponse de l'Équipe ${failedTeamId} ! Le buzzer reste ouvert pour les autres.`);
+        setTimeout(() => {
+          setRejectedNotice(null);
+        }, 4000);
+      })
+      .on('broadcast', { event: 'start_tie_breaker' }, (payload) => {
+        setBuzzWinner(null);
+        setRejectedNotice(null);
+        if (payload.payload?.teamsInTie) {
+          setTiedTeamIds(payload.payload.teamsInTie);
+        }
+        if (payload.payload?.question) {
+          setCurrentBonusQuestion(payload.payload.question);
+        }
+      })
+      .on('broadcast', { event: 'next_bonus_question' }, (payload) => {
+        setBuzzWinner(null);
+        setRejectedNotice(null);
+        if (payload.payload?.question) {
+          setCurrentBonusQuestion(payload.payload.question);
+        }
+      })
+      .on('broadcast', { event: 'tie_breaker_finished' }, () => {
+        soundFX.playCorrect();
+        setBuzzWinner(null);
+        setRejectedNotice(null);
+        setTiedTeamIds([]);
       })
       .subscribe();
 
@@ -63,12 +113,14 @@ export default function Display() {
   useEffect(() => {
     if (!settings?.tie_breaker_mode) {
       setBuzzWinner(null);
+      setRejectedNotice(null);
+      setTiedTeamIds([]);
     }
   }, [settings?.tie_breaker_mode]);
 
   // Préparation de la manche (Mélange des choix et Timer)
   useEffect(() => {
-    if (settings?.is_playing && currentQuestion && !settings.show_results) {
+    if (settings?.is_playing && currentQuestion && !settings.show_results && !settings.tie_breaker_mode) {
       setTimeLeft(currentQuestion.duration);
       
       if (currentQuestion.phase === 1 || currentQuestion.phase === 2) {
@@ -80,7 +132,7 @@ export default function Display() {
         setChoices([]);
       }
     }
-  }, [settings?.current_round, settings?.is_playing, currentQuestion, settings?.show_results]);
+  }, [settings?.current_round, settings?.is_playing, currentQuestion, settings?.show_results, settings?.tie_breaker_mode]);
 
   // Décompte du Timer
   useEffect(() => {
@@ -115,7 +167,6 @@ export default function Display() {
         onClick={() => {
           setAudioEnabled(!audioEnabled);
           if (!audioEnabled) {
-            // Débloque l'audio sur interaction utilisateur
             if (bgAudioRef.current && settings?.bg_audio_url && !settings?.is_playing) {
               bgAudioRef.current.play().catch(() => {});
             }
@@ -142,11 +193,20 @@ export default function Display() {
     </>
   );
 
-  // Composant Écran d'Attente
-  if (!settings?.is_playing && !settings?.tie_breaker_mode) {
+  // 1. ÉCRAN D'ATTENTE (Quand la partie n'est pas lancée)
+  if (!settings?.is_playing) {
     return (
-      <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center relative overflow-hidden">
+      <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center relative overflow-hidden bg-sunburst">
         {AudioElements}
+        
+        {/* Background animé rotatif */}
+        <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[150vw] h-[150vw] md:w-[150vh] md:h-[150vh] animate-[spin_40s_linear_infinite] opacity-30">
+            <div className="absolute top-0 left-0 w-1/2 h-1/2 bg-purple-600 rounded-full mix-blend-screen filter blur-[100px]"></div>
+            <div className="absolute bottom-0 right-0 w-1/2 h-1/2 bg-blue-600 rounded-full mix-blend-screen filter blur-[100px]"></div>
+          </div>
+        </div>
+
         {settings?.bg_video_url && (
           <video autoPlay loop muted className="absolute w-full h-full object-cover opacity-30 z-0">
             <source src={settings.bg_video_url} type="video/mp4" />
@@ -179,52 +239,22 @@ export default function Display() {
     );
   }
 
-  // Composant Manche Bonus (Buzzer)
-  if (settings.tie_breaker_mode) {
-    const winnerTeam = teams.find(t => t.id === buzzWinner);
-    const teamColors: Record<string, string> = {
-      'A': 'text-blue-400 drop-shadow-[0_0_20px_rgba(59,130,246,0.8)]',
-      'B': 'text-red-400 drop-shadow-[0_0_20px_rgba(239,68,68,0.8)]',
-      'C': 'text-green-400 drop-shadow-[0_0_20px_rgba(34,197,94,0.8)]',
-      'D': 'text-purple-400 drop-shadow-[0_0_20px_rgba(168,85,247,0.8)]'
-    };
+  // 2. ÉCRAN PRINCIPAL DE JEU (Identique en manche normale ou manche bonus au buzzer)
+  const isTieBreaker = Boolean(settings.tie_breaker_mode);
+  const activeDisplayQuestion = isTieBreaker ? currentBonusQuestion : currentQuestion;
+  const progressPercentage = activeDisplayQuestion && !isTieBreaker ? (timeLeft / activeDisplayQuestion.duration) * 100 : 0;
+  const buzzedTeam = teams.find(t => t.id === buzzWinner);
 
-    return (
-      <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center bg-red-900/40">
-        {AudioElements}
-        <h1 className="text-6xl text-3d-yellow mb-12 uppercase drop-shadow-2xl animate-pulse">Manche Buzzer !</h1>
-        
-        {buzzWinner && winnerTeam ? (
-          <motion.div 
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            transition={{ type: 'spring', bounce: 0.7 }}
-            className="bg-black/80 p-16 rounded-[4rem] border-8 border-white/20 shadow-2xl"
-          >
-            <p className="text-4xl text-white font-sans mb-6 uppercase tracking-widest">L'équipe a buzzé :</p>
-            <p className={`text-9xl font-paytone uppercase ${teamColors[buzzWinner]}`}>
-              {winnerTeam.name || `Équipe ${winnerTeam.id}`}
-            </p>
-          </motion.div>
-        ) : (
-          <div className="text-4xl text-white/50 font-paytone tracking-widest uppercase animate-pulse">
-            En attente d'un buzz...
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // Composant Principal de Jeu (Questions)
-  const progressPercentage = currentQuestion ? (timeLeft / currentQuestion.duration) * 100 : 0;
-  
   return (
-    <div className="flex flex-col w-full h-[100dvh] p-6 relative overflow-hidden bg-gradient-to-br from-indigo-900 via-purple-900 to-black">
+    <div className="flex flex-col w-full h-[100dvh] p-6 relative overflow-hidden bg-sunburst">
       {AudioElements}
       
-      {/* Lights effect rotatif */}
-      <div className="absolute inset-0 w-full h-full overflow-hidden pointer-events-none opacity-40 mix-blend-screen z-0">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[200vw] h-[200vw] md:w-[150vh] md:h-[150vh] bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-white/20 via-transparent to-transparent animate-[spin_30s_linear_infinite]"></div>
+      {/* Background animé rotatif */}
+      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[150vw] h-[150vw] md:w-[150vh] md:h-[150vh] animate-[spin_40s_linear_infinite] opacity-30">
+          <div className="absolute top-0 left-0 w-1/2 h-1/2 bg-purple-600 rounded-full mix-blend-screen filter blur-[100px]"></div>
+          <div className="absolute bottom-0 right-0 w-1/2 h-1/2 bg-blue-600 rounded-full mix-blend-screen filter blur-[100px]"></div>
+        </div>
       </div>
 
       {settings?.bg_video_url && (
@@ -235,8 +265,8 @@ export default function Display() {
 
       <div className="z-10 flex flex-col h-full flex-grow">
         
-        {/* En-tête : Scores des équipes */}
-        <div className="grid grid-cols-4 gap-4 mb-8">
+        {/* En-tête : Scores des 4 équipes (Strictement identique) */}
+        <div className="grid grid-cols-4 gap-4 mb-6">
           {teams.map(team => {
             const teamStyles: Record<string, string> = {
               'A': 'bg-blue-600 border-blue-400',
@@ -245,12 +275,34 @@ export default function Display() {
               'D': 'bg-purple-600 border-purple-400'
             };
             const isEliminated = team.is_eliminated;
+            const isTied = isTieBreaker && (tiedTeamIds.length === 0 || tiedTeamIds.includes(team.id));
+            const hasBuzzed = buzzWinner === team.id;
             
             return (
               <div 
                 key={team.id} 
-                className={`flex flex-col items-center justify-center p-4 rounded-3xl border-4 shadow-xl backdrop-blur-md transition-all ${isEliminated ? 'bg-gray-800 border-gray-600 opacity-60 grayscale' : teamStyles[team.id]}`}
+                className={`flex flex-col items-center justify-center p-4 rounded-3xl border-4 shadow-xl backdrop-blur-md transition-all relative ${
+                  isEliminated 
+                    ? 'bg-gray-800 border-gray-600 opacity-60 grayscale' 
+                    : hasBuzzed 
+                    ? `${teamStyles[team.id]} ring-4 ring-yellow-400 scale-105 shadow-[0_0_30px_rgba(234,179,8,0.8)]`
+                    : isTied
+                    ? `${teamStyles[team.id]} shadow-[0_0_20px_rgba(234,179,8,0.5)]`
+                    : teamStyles[team.id]
+                }`}
               >
+                {/* Badge Manche Bonus pour les équipes en ballotage */}
+                {isTieBreaker && isTied && !isEliminated && (
+                  <span className="absolute -top-3 bg-yellow-400 text-black text-[10px] font-paytone px-2 py-0.5 rounded-full uppercase shadow">
+                    ⚡ Ballotée
+                  </span>
+                )}
+                {hasBuzzed && (
+                  <span className="absolute -top-3 bg-yellow-300 text-black text-[11px] font-paytone px-3 py-0.5 rounded-full uppercase shadow animate-bounce">
+                    🔔 A BUZZÉ !
+                  </span>
+                )}
+
                 <span className="text-xl md:text-2xl font-bold font-sans text-white uppercase tracking-wider truncate w-full text-center">
                   {team.name || `Équipe ${team.id}`}
                 </span>
@@ -262,40 +314,54 @@ export default function Display() {
           })}
         </div>
 
-        {/* Zone Centrale : Photo et Infos */}
-        <div className="flex-1 flex flex-col items-center justify-center mb-8 relative">
+        {/* Notification temporaire si refus de réponse en Manche Bonus */}
+        {isTieBreaker && rejectedNotice && (
+          <motion.div 
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="bg-red-600 border-2 border-white px-6 py-2 rounded-2xl text-white font-paytone text-lg shadow-2xl max-w-2xl mx-auto mb-3"
+          >
+            {rejectedNotice}
+          </motion.div>
+        )}
+
+        {/* Zone Centrale : Cadre photo emblématique du jeu (Strictement identique) */}
+        <div className="flex-1 flex flex-col items-center justify-center mb-6 relative">
           <AnimatePresence mode="wait">
             <motion.div 
-              key={currentQuestion?.id || 'none'}
+              key={activeDisplayQuestion?.id || (isTieBreaker ? 'tie-breaker' : 'none')}
               initial={{ opacity: 0, scale: 0.8, y: 50 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: -50 }}
               transition={{ duration: 0.5, type: 'spring' }}
               className="relative"
             >
-              {/* Cadre style chapiteau */}
+              {/* Cadre doré iconique */}
               <div className="bg-yellow-500 p-3 rounded-[3rem] shadow-[0_0_40px_rgba(234,179,8,0.4)] border-4 border-yellow-300">
                 <div className="border-4 border-dashed border-yellow-800/30 p-2 rounded-[2.5rem] bg-black">
                   <div className="relative overflow-hidden rounded-[2rem] w-full max-w-4xl aspect-[4/3] md:aspect-video flex items-center justify-center bg-gray-900 border-4 border-white/10">
-                    {currentQuestion?.photo_url ? (
+                    {activeDisplayQuestion?.photo_url ? (
                       <img 
-                        src={currentQuestion.photo_url} 
+                        src={activeDisplayQuestion.photo_url} 
                         alt="Devinette" 
                         className="w-full h-full object-cover"
                       />
                     ) : (
-                      <span className="text-white/50 text-2xl font-paytone">Photo manquante</span>
+                      <span className="text-white/50 text-2xl font-paytone">
+                        {isTieBreaker ? "Photo Manche Bonus" : "Photo manquante"}
+                      </span>
                     )}
                     
-                    {/* Overlay de Révélation (Phase 3 textuelle) */}
-                    {settings.current_phase === 3 && settings.show_results && (
+                    {/* Overlay de Révélation (Phase 3 texte en fin de manche) */}
+                    {!isTieBreaker && settings.current_phase === 3 && settings.show_results && activeDisplayQuestion && (
                        <motion.div 
                          initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                          className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center backdrop-blur-sm"
                        >
                          <p className="text-3xl text-yellow-400 font-paytone uppercase mb-4">La réponse était :</p>
                          <p className="text-6xl text-white font-bold drop-shadow-[0_0_20px_rgba(255,255,255,0.5)]">
-                           {currentQuestion.correct_answer}
+                           {activeDisplayQuestion.correct_answer}
                          </p>
                        </motion.div>
                     )}
@@ -306,12 +372,12 @@ export default function Display() {
           </AnimatePresence>
         </div>
 
-        {/* Barre de temps */}
-        {!settings.show_results && currentQuestion && (
+        {/* Barre de temps (en manche régulière uniquement) */}
+        {!isTieBreaker && !settings.show_results && activeDisplayQuestion && (
           <motion.div 
             animate={{ scale: progressPercentage < 25 && progressPercentage > 0 ? [1, 1.02, 1] : 1 }}
             transition={{ repeat: progressPercentage < 25 ? Infinity : 0, duration: 0.5 }}
-            className="w-full max-w-4xl mx-auto mb-8 h-6 bg-black/60 rounded-full border-2 border-white/20 overflow-hidden shadow-inner"
+            className="w-full max-w-4xl mx-auto mb-6 h-6 bg-black/60 rounded-full border-2 border-white/20 overflow-hidden shadow-inner"
           >
             <motion.div 
               className={`h-full ${progressPercentage < 25 ? 'bg-red-500 shadow-[0_0_15px_rgba(239,68,68,0.8)]' : progressPercentage < 50 ? 'bg-yellow-500' : 'bg-green-500'}`}
@@ -321,41 +387,75 @@ export default function Display() {
           </motion.div>
         )}
 
-        {/* Zone Basse : Propositions (Phases 1 et 2) */}
-        {(settings.current_phase === 1 || settings.current_phase === 2) && (
-          <div className={`grid gap-6 w-full max-w-5xl mx-auto ${settings.current_phase === 1 ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-4'}`}>
-            <AnimatePresence>
-              {choices.map((choice, idx) => {
-                const isCorrect = choice === currentQuestion?.correct_answer;
-                const showReveal = settings.show_results;
-                
-                let btnClasses = "bg-blue-900/80 border-blue-500 text-white shadow-[0_8px_0_rgb(30,58,138)]";
-                
-                if (showReveal) {
-                  if (isCorrect) {
-                    btnClasses = "bg-green-500 border-green-300 text-white shadow-[0_0_30px_rgba(34,197,94,0.8)] scale-110 z-10";
-                  } else {
-                    btnClasses = "bg-gray-800 border-gray-700 text-gray-500 opacity-50 scale-95";
-                  }
-                }
-
-                return (
-                  <motion.div
-                    key={choice}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`flex items-center justify-center p-6 rounded-2xl border-4 transition-all duration-500 text-center ${btnClasses}`}
-                  >
-                    <span className="text-2xl md:text-3xl font-bold font-sans drop-shadow-md break-words">{choice}</span>
-                  </motion.div>
-                );
-              })}
-            </AnimatePresence>
+        {/* Zone Basse : Choix Multiples OU Bandeau Manche Bonus (Même style graphique) */}
+        {isTieBreaker ? (
+          /* MANCHE BONUS : Bandeau harmonieux dans le même esprit que le reste du jeu */
+          <div className="w-full max-w-4xl mx-auto">
+            {buzzWinner && buzzedTeam ? (
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                className="bg-black/60 p-6 rounded-3xl border-4 border-yellow-400 text-center shadow-2xl backdrop-blur-md"
+              >
+                <p className="text-xl md:text-2xl text-yellow-300 font-paytone uppercase mb-2 animate-pulse">
+                  🔔 L'ÉQUIPE A BUZZÉ :
+                </p>
+                <div className="text-4xl md:text-6xl font-paytone text-white uppercase drop-shadow-lg mb-2">
+                  {buzzedTeam.name || `Équipe ${buzzedTeam.id}`}
+                </div>
+                <p className="text-base text-white/80 font-sans font-bold">
+                  Réponse orale en cours avec le Maître du Jeu...
+                </p>
+              </motion.div>
+            ) : (
+              <div className="bg-black/50 p-6 rounded-3xl border-2 border-yellow-500/40 text-center shadow-xl backdrop-blur-md flex flex-col items-center gap-2">
+                <div className="flex items-center gap-2 text-yellow-400 font-paytone text-2xl md:text-3xl uppercase tracking-wider">
+                  <span className="animate-bounce">⚡</span>
+                  <span>MANCHE BONUS : DÉPARTAGE AU BUZZER</span>
+                  <span className="animate-bounce">⚡</span>
+                </div>
+                <p className="text-white/80 text-sm md:text-base font-sans">
+                  Le premier qui buzze sur son écran donne sa réponse à l'oral !
+                </p>
+              </div>
+            )}
           </div>
+        ) : (
+          /* MANCHES NORMALES : Propositions (Phases 1 et 2) */
+          (settings.current_phase === 1 || settings.current_phase === 2) && (
+            <div className={`grid gap-6 w-full max-w-5xl mx-auto ${settings.current_phase === 1 ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-4'}`}>
+              <AnimatePresence>
+                {choices.map((choice) => {
+                  const isCorrect = choice === currentQuestion?.correct_answer;
+                  const showReveal = settings.show_results;
+                  
+                  let btnClasses = "bg-blue-900/80 border-blue-500 text-white shadow-[0_8px_0_rgb(30,58,138)]";
+                  
+                  if (showReveal) {
+                    if (isCorrect) {
+                      btnClasses = "bg-green-500 border-green-300 text-white shadow-[0_0_30px_rgba(34,197,94,0.8)] scale-110 z-10";
+                    } else {
+                      btnClasses = "bg-gray-800 border-gray-700 text-gray-500 opacity-50 scale-95";
+                    }
+                  }
+
+                  return (
+                    <motion.div
+                      key={choice}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={`flex items-center justify-center p-6 rounded-2xl border-4 transition-all duration-500 text-center ${btnClasses}`}
+                    >
+                      <span className="text-2xl md:text-3xl font-bold font-sans drop-shadow-md break-words">{choice}</span>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+            </div>
+          )
         )}
         
       </div>
     </div>
   );
 }
-

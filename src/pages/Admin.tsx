@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuestions } from '../hooks/useQuestions';
 import { useGameState } from '../hooks/useGameState';

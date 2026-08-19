@@ -1,12 +1,16 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import { useGameState } from '../hooks/useGameState';
 import { useQuestions } from '../hooks/useQuestions';
 import { useLiveAnswers } from '../hooks/useLiveAnswers';
 import { ConfirmModal } from '../components/ui/ConfirmModal';
+import { TieBreakerModal } from '../components/gamemaster/TieBreakerModal';
+import { PhaseEndModal } from '../components/gamemaster/PhaseEndModal';
+import { soundFX } from '../lib/soundEffects';
+import { Team } from '../types';
 
-// Fonction pour calculer la distance de Levenshtein (nombre de fautes de frappe/lettres de différence)
+// Distance de Levenshtein pour tolérance fautes de frappe
 const getLevenshteinDistance = (a: string, b: string): number => {
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
@@ -25,7 +29,7 @@ const getLevenshteinDistance = (a: string, b: string): number => {
   return matrix[b.length][a.length];
 };
 
-// Fonction pour normaliser le texte (enlève les accents, majuscules et espaces superflus)
+// Normalisation de texte
 const normalizeText = (text: string) => {
   return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 };
@@ -38,9 +42,50 @@ export default function GameMaster() {
   const [showResetModal, setShowResetModal] = useState(false);
   const [activeTab, setActiveTab] = useState<'controls' | 'teams'>('controls');
 
+  // Modales de fin de phase et départage
+  const [showPhaseEndModal, setShowPhaseEndModal] = useState(false);
+  const [showTieBreakerModal, setShowTieBreakerModal] = useState(false);
+  const [pendingNextRound, setPendingNextRound] = useState<number | null>(null);
+
+  // État du départage au buzzer
+  const [tiedTeams, setTiedTeams] = useState<Team[]>([]);
+  const [targetSpots, setTargetSpots] = useState<number>(1);
+  const [bonusQuestionIndex, setBonusQuestionIndex] = useState<number>(0);
+  const [buzzedTeamId, setBuzzedTeamId] = useState<string | null>(null);
+  const [failedTeamIds, setFailedTeamIds] = useState<string[]>([]);
+  const [savedTeamIds, setSavedTeamIds] = useState<string[]>([]);
+
   const { settings, teams, error: gameStateError } = useGameState();
   const { questions } = useQuestions();
   const { liveAnswers, clearAnswers } = useLiveAnswers();
+
+  // Questions régulières et questions bonus
+  const regularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
+  const bonusQuestions = questions.filter(q => q.phase === 0 || q.is_bonus);
+  const currentBonusQuestion = bonusQuestions[bonusQuestionIndex] || null;
+
+  // Écoute du canal Realtime buzzer
+  useEffect(() => {
+    const channel = supabase.channel('buzzer')
+      .on('broadcast', { event: 'buzz' }, (payload) => {
+        const teamId = payload.payload?.teamId;
+        if (!teamId) return;
+        
+        // Si pas de buzz en cours et que l'équipe n'a pas déjà échoué
+        setBuzzedTeamId((current) => {
+          if (current) return current;
+          soundFX.playBuzzer();
+          // Ouvre la modale de validation si elle était fermée
+          setShowTieBreakerModal(true);
+          return teamId;
+        });
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,14 +98,15 @@ export default function GameMaster() {
     }
   };
 
+  // Démarrer la partie
   const handleStartGame = async () => {
     setIsProcessing(true);
     await clearAnswers();
-    const firstQuestion = questions.find(q => q.order === 1);
+    const firstQuestion = regularQuestions.find(q => q.order === 1) || regularQuestions[0];
     
     await supabase.from('game_settings').update({
       is_playing: true,
-      current_round: 1,
+      current_round: firstQuestion ? firstQuestion.order : 1,
       current_phase: firstQuestion ? firstQuestion.phase : 1,
       show_results: false,
       tie_breaker_mode: false
@@ -68,6 +114,7 @@ export default function GameMaster() {
     setIsProcessing(false);
   };
 
+  // Révéler et compter les scores
   const handleRevealAndScore = async () => {
     if (!settings) return;
     setIsProcessing(true);
@@ -75,22 +122,18 @@ export default function GameMaster() {
     const currentQuestion = questions.find(q => q.order === settings.current_round);
     
     if (currentQuestion) {
-      // Calcul des points
       for (const team of teams) {
         if (team.is_eliminated) continue;
         
         const teamAnswer = liveAnswers.find(a => a.team_id === team.id);
         if (teamAnswer) {
-          // Vérification tolérante : normalisation (accents/casse) et Levenshtein (fautes d'orthographe)
           const normInput = normalizeText(teamAnswer.answer);
           const normTarget = normalizeText(currentQuestion.correct_answer);
           
-          // Tolérance : 1 erreur autorisée pour les mots courts, 2 pour les mots plus longs (>= 6 lettres)
           const maxTypos = normTarget.length >= 6 ? 2 : 1;
           const isCorrect = getLevenshteinDistance(normInput, normTarget) <= maxTypos;
           
           if (isCorrect) {
-            // +1 point pour une bonne réponse
             await supabase.from('teams')
               .update({ score: team.score + 1 })
               .eq('id', team.id);
@@ -99,7 +142,6 @@ export default function GameMaster() {
       }
     }
 
-    // Afficher les résultats sur l'écran collectif
     await supabase.from('game_settings')
       .update({ show_results: true })
       .eq('id', 1);
@@ -107,13 +149,88 @@ export default function GameMaster() {
     setIsProcessing(false);
   };
 
+  // Passer à la manche suivante ou détecter la fin de phase
   const handleNextRound = async () => {
     if (!settings) return;
     setIsProcessing(true);
-    
+
+    const currentQuestion = regularQuestions.find(q => q.order === settings.current_round);
+    const currentIndex = regularQuestions.findIndex(q => q.order === settings.current_round);
+    const nextQuestion = regularQuestions[currentIndex + 1];
+
+    const isPhaseEnd = !nextQuestion || (currentQuestion && nextQuestion.phase !== currentQuestion.phase);
+
+    if (isPhaseEnd && currentQuestion) {
+      // Détection des éliminations ou des égalités
+      const activeTeams = teams.filter(t => !t.is_eliminated).sort((a, b) => b.score - a.score);
+      const phase = currentQuestion.phase;
+
+      if (phase === 1) {
+        // Phase 1 : 4 équipes -> 3 qualifiées, 1 éliminée
+        // Seuil d'élimination : 3ème vs 4ème
+        if (activeTeams.length >= 4 && activeTeams[2].score === activeTeams[3].score) {
+          const cutoffScore = activeTeams[2].score;
+          const inTie = activeTeams.filter(t => t.score === cutoffScore);
+          const safeCount = activeTeams.filter(t => t.score > cutoffScore).length;
+          const spots = 3 - safeCount;
+
+          setTiedTeams(inTie);
+          setTargetSpots(spots);
+          setPendingNextRound(nextQuestion ? nextQuestion.order : settings.current_round + 1);
+          setShowPhaseEndModal(true);
+          setIsProcessing(false);
+          return;
+        } else if (activeTeams.length >= 4) {
+          // Pas d'égalité, T4 éliminée
+          setTiedTeams([]);
+          setPendingNextRound(nextQuestion ? nextQuestion.order : settings.current_round + 1);
+          setShowPhaseEndModal(true);
+          setIsProcessing(false);
+          return;
+        }
+      } else if (phase === 2) {
+        // Phase 2 : 3 équipes -> 2 qualifiées, 1 éliminée
+        // Seuil d'élimination : 2ème vs 3ème
+        if (activeTeams.length >= 3 && activeTeams[1].score === activeTeams[2].score) {
+          const cutoffScore = activeTeams[1].score;
+          const inTie = activeTeams.filter(t => t.score === cutoffScore);
+          const safeCount = activeTeams.filter(t => t.score > cutoffScore).length;
+          const spots = 2 - safeCount;
+
+          setTiedTeams(inTie);
+          setTargetSpots(spots);
+          setPendingNextRound(nextQuestion ? nextQuestion.order : settings.current_round + 1);
+          setShowPhaseEndModal(true);
+          setIsProcessing(false);
+          return;
+        } else if (activeTeams.length >= 3) {
+          // Pas d'égalité, T3 éliminée
+          setTiedTeams([]);
+          setPendingNextRound(nextQuestion ? nextQuestion.order : settings.current_round + 1);
+          setShowPhaseEndModal(true);
+          setIsProcessing(false);
+          return;
+        }
+      } else if (phase === 3) {
+        // Phase 3 : Duel final -> 1 vainqueur
+        if (activeTeams.length >= 2 && activeTeams[0].score === activeTeams[1].score) {
+          setTiedTeams(activeTeams);
+          setTargetSpots(1);
+          setShowPhaseEndModal(true);
+          setIsProcessing(false);
+          return;
+        } else {
+          setTiedTeams([]);
+          setShowPhaseEndModal(true);
+          setIsProcessing(false);
+          return;
+        }
+      }
+    }
+
+    // Manche suivante classique dans la même phase
     await clearAnswers();
-    const nextRoundIndex = settings.current_round + 1;
-    const nextQuestion = questions.find(q => q.order === nextRoundIndex);
+    const nextRoundIndex = nextQuestion ? nextQuestion.order : settings.current_round + 1;
     
     await supabase.from('game_settings').update({
       current_round: nextRoundIndex,
@@ -125,25 +242,158 @@ export default function GameMaster() {
     setIsProcessing(false);
   };
 
-  const handleToggleTieBreaker = async () => {
-    if (!settings) return;
+  // Lancer le départage au buzzer
+  const handleLaunchTieBreaker = async () => {
+    setShowPhaseEndModal(false);
     setIsProcessing(true);
+
+    const bonusQ = bonusQuestions[0] || null;
+    const tiedIds = tiedTeams.map(t => t.id);
+
+    setBonusQuestionIndex(0);
+    setFailedTeamIds([]);
+    setSavedTeamIds([]);
+    setBuzzedTeamId(null);
+
     await supabase.from('game_settings').update({
-      tie_breaker_mode: !settings.tie_breaker_mode
+      tie_breaker_mode: true
     }).eq('id', 1);
+
+    // Broadcast Realtime pour réveiller les écrans
+    supabase.channel('buzzer').send({
+      type: 'broadcast',
+      event: 'start_tie_breaker',
+      payload: {
+        teamsInTie: tiedIds,
+        question: bonusQ,
+        targetSpots
+      }
+    });
+
+    setShowTieBreakerModal(true);
     setIsProcessing(false);
   };
 
+  // Valider la bonne réponse d'une équipe en départage
+  const handleValidateTieAnswer = async (teamId: string) => {
+    soundFX.playCorrect();
+    const newSaved = [...savedTeamIds, teamId];
+    setSavedTeamIds(newSaved);
+    setBuzzedTeamId(null);
+
+    // Vérifier si le départage est terminé
+    const remainingToEliminate = tiedTeams.length - targetSpots;
+    const remainingInTie = tiedTeams.filter(t => !newSaved.includes(t.id));
+
+    if (remainingInTie.length <= remainingToEliminate) {
+      // Toutes les places qualificatives sont attribuées !
+      // Les équipes restantes dans remainingInTie sont éliminées
+      for (const elimTeam of remainingInTie) {
+        await supabase.from('teams').update({ is_eliminated: true }).eq('id', elimTeam.id);
+      }
+
+      await supabase.from('game_settings').update({
+        tie_breaker_mode: false
+      }).eq('id', 1);
+
+      supabase.channel('buzzer').send({
+        type: 'broadcast',
+        event: 'tie_breaker_finished',
+        payload: {
+          savedTeamIds: newSaved,
+          eliminatedTeamIds: remainingInTie.map(t => t.id)
+        }
+      });
+
+      setShowTieBreakerModal(false);
+      
+      // Passer à la phase suivante
+      if (pendingNextRound) {
+        await clearAnswers();
+        const nextQ = regularQuestions.find(q => q.order === pendingNextRound);
+        await supabase.from('game_settings').update({
+          current_round: pendingNextRound,
+          current_phase: nextQ ? nextQ.phase : (settings ? settings.current_phase + 1 : 1),
+          show_results: false
+        }).eq('id', 1);
+      }
+    } else {
+      // Encore des places à attribuer, passer à la photo suivante
+      handleNextBonusQuestion();
+    }
+  };
+
+  // Refuser la réponse (mauvaise réponse)
+  const handleRejectTieAnswer = (teamId: string) => {
+    soundFX.playWrong();
+    const newFailed = [...failedTeamIds, teamId];
+    setFailedTeamIds(newFailed);
+    setBuzzedTeamId(null);
+
+    supabase.channel('buzzer').send({
+      type: 'broadcast',
+      event: 'buzz_rejected',
+      payload: {
+        failedTeamId: teamId,
+        failedTeamIds: newFailed
+      }
+    });
+  };
+
+  // Passer à la photo bonus suivante
+  const handleNextBonusQuestion = () => {
+    const nextIndex = (bonusQuestionIndex + 1) % (bonusQuestions.length || 1);
+    setBonusQuestionIndex(nextIndex);
+    setFailedTeamIds([]);
+    setBuzzedTeamId(null);
+
+    const nextBonusQ = bonusQuestions[nextIndex] || null;
+    if (nextBonusQ) {
+      supabase.channel('buzzer').send({
+        type: 'broadcast',
+        event: 'next_bonus_question',
+        payload: {
+          question: nextBonusQ
+        }
+      });
+    }
+  };
+
+  // Confirmer le passage à la phase suivante (sans égalité)
+  const handleConfirmNextPhaseWithoutTie = async () => {
+    setShowPhaseEndModal(false);
+    setIsProcessing(true);
+
+    const activeTeams = teams.filter(t => !t.is_eliminated).sort((a, b) => b.score - a.score);
+    const phase = settings?.current_phase || 1;
+
+    // Élimination de l'équipe au score le plus bas
+    if (phase === 1 && activeTeams.length >= 4) {
+      await supabase.from('teams').update({ is_eliminated: true }).eq('id', activeTeams[3].id);
+    } else if (phase === 2 && activeTeams.length >= 3) {
+      await supabase.from('teams').update({ is_eliminated: true }).eq('id', activeTeams[2].id);
+    }
+
+    if (phase < 3 && pendingNextRound) {
+      await clearAnswers();
+      const nextQ = regularQuestions.find(q => q.order === pendingNextRound);
+      await supabase.from('game_settings').update({
+        current_round: pendingNextRound,
+        current_phase: nextQ ? nextQ.phase : phase + 1,
+        show_results: false,
+        tie_breaker_mode: false
+      }).eq('id', 1);
+    }
+
+    setIsProcessing(false);
+  };
+
+  // Réinitialiser la partie
   const executeRestartGame = async () => {
     setIsProcessing(true);
-    
-    // Remettre les scores des équipes à 0 et les déséliminer
     await supabase.from('teams').update({ score: 0, is_eliminated: false }).neq('id', 'dummy');
-    
-    // Nettoyer les réponses
     await clearAnswers();
 
-    // Réinitialiser les paramètres
     await supabase.from('game_settings').update({
       is_playing: false,
       current_round: 1,
@@ -152,13 +402,15 @@ export default function GameMaster() {
       tie_breaker_mode: false
     }).eq('id', 1);
 
+    setShowResetModal(false);
+    setShowPhaseEndModal(false);
+    setShowTieBreakerModal(false);
     setIsProcessing(false);
   };
 
   if (!isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center relative overflow-hidden">
-        
         <div className="w-full max-w-xs mb-8 drop-shadow-2xl">
           <img 
             src={`${import.meta.env.BASE_URL}logo.png`} 
@@ -196,6 +448,11 @@ export default function GameMaster() {
   }
 
   const currentQuestion = settings ? questions.find(q => q.order === settings.current_round) : null;
+  const activeTeams = teams.filter(t => !t.is_eliminated).sort((a, b) => b.score - a.score);
+  const eliminatedTeam = activeTeams.length > 0 ? activeTeams[activeTeams.length - 1] : null;
+  const winnerTeam = activeTeams.length > 0 ? activeTeams[0] : null;
+  const hasTie = tiedTeams.length > 0;
+  const buzzedTeam = teams.find(t => t.id === buzzedTeamId) || null;
 
   return (
     <div className="flex flex-col items-center w-full min-h-screen p-4 md:p-8">
@@ -205,10 +462,24 @@ export default function GameMaster() {
           <div className="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center border-2 border-white shadow-[0_4px_0_rgb(107,33,168)]">
              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
           </div>
-          <h1 className="text-3xl md:text-4xl text-3d-yellow uppercase m-0">Tableau de bord MDJ</h1>
+          <div>
+            <h1 className="text-3xl md:text-4xl text-3d-yellow uppercase m-0">Tableau de bord MDJ</h1>
+            <p className="text-xs text-white/50 font-sans">
+              {bonusQuestions.length} question(s) bonus disponible(s) en réserve
+            </p>
+          </div>
         </div>
         
         <div className="flex gap-3">
+          {settings?.tie_breaker_mode && (
+            <button
+              onClick={() => setShowTieBreakerModal(true)}
+              className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold font-sans px-4 py-2 rounded-xl transition-all shadow-lg flex items-center gap-2 animate-pulse"
+            >
+              <span>⚡</span> Ouvrir Départage Buzzer
+            </button>
+          )}
+
           <button 
             onClick={() => setShowResetModal(true)}
             className="flex items-center justify-center bg-red-900/40 hover:bg-red-600 border border-red-500/50 text-white p-3 rounded-xl transition-colors shadow-lg"
@@ -291,12 +562,22 @@ export default function GameMaster() {
                 <div className="h-px bg-white/10 my-2"></div>
 
                 <button 
-                  onClick={handleToggleTieBreaker}
+                  onClick={() => {
+                    if (settings.tie_breaker_mode) {
+                      supabase.from('game_settings').update({ tie_breaker_mode: false }).eq('id', 1);
+                    } else {
+                      setTiedTeams(activeTeams);
+                      setTargetSpots(1);
+                      setShowTieBreakerModal(true);
+                    }
+                  }}
                   disabled={isProcessing}
-                  className={`w-full relative overflow-hidden ${settings.tie_breaker_mode ? 'bg-gradient-to-b from-red-400 to-red-700 border-red-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(153,27,27),0_10px_20px_rgba(0,0,0,0.5)] active:shadow-[inset_0px_2px_4px_rgba(255,255,255,0.2),0_2px_0_rgb(153,27,27),0_5px_10px_rgba(0,0,0,0.5)] hover:from-red-300 hover:to-red-600' : 'bg-gradient-to-b from-gray-500 to-gray-800 border-gray-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(31,41,55),0_10px_20px_rgba(0,0,0,0.5)] active:shadow-[inset_0px_2px_4px_rgba(255,255,255,0.2),0_2px_0_rgb(31,41,55),0_5px_10px_rgba(0,0,0,0.5)] hover:from-gray-400 hover:to-gray-700'} text-white text-lg font-paytone py-4 rounded-3xl border-2 border-b-4 uppercase transition-all active:translate-y-1 disabled:opacity-50`}
+                  className={`w-full relative overflow-hidden ${settings.tie_breaker_mode ? 'bg-gradient-to-b from-red-400 to-red-700 border-red-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(153,27,27),0_10px_20px_rgba(0,0,0,0.5)] hover:from-red-300 hover:to-red-600' : 'bg-gradient-to-b from-gray-500 to-gray-800 border-gray-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(31,41,55),0_10px_20px_rgba(0,0,0,0.5)] hover:from-gray-400 hover:to-gray-700'} text-white text-lg font-paytone py-4 rounded-3xl border-2 border-b-4 uppercase transition-all active:translate-y-1 disabled:opacity-50`}
                 >
                   <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-white/20 to-transparent rounded-t-3xl pointer-events-none"></div>
-                  <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{settings.tie_breaker_mode ? "Désactiver Buzzer" : "Activer Manche Buzzer"}</span>
+                  <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
+                    {settings.tie_breaker_mode ? "Arrêter le Mode Buzzer" : "⚡ Lancer un Départage Manuel au Buzzer"}
+                  </span>
                 </button>
               </div>
             )}
@@ -315,7 +596,7 @@ export default function GameMaster() {
                 <div className="absolute top-2 left-2 bg-black/80 px-2 py-1 rounded text-xs text-white">Survolez pour voir net</div>
               </div>
               <div className="bg-green-900/40 border border-green-500/50 p-4 rounded-xl">
-                <span className="block text-green-300 text-sm font-bold uppercase mb-1">Bonne Réponse :</span>
+                <span className="block text-green-300 text-sm font-bold uppercase mb-1">Bonne Réponse Attendue :</span>
                 <span className="text-2xl text-white font-bold">{currentQuestion.correct_answer}</span>
               </div>
             </div>
@@ -382,7 +663,6 @@ export default function GameMaster() {
                     <div className="flex justify-between items-center bg-black/50 p-3 rounded-lg border border-white/5">
                       <span className={`${statusColor} text-sm`}>{statusText}</span>
                       
-                      {/* Afficher la réponse uniquement si l'équipe a répondu */}
                       {teamAnswer && (
                          <div className="text-right">
                            <span className="block text-xs text-white/50 mb-0.5">{teamAnswer.time_taken.toFixed(1)}s</span>
@@ -405,6 +685,35 @@ export default function GameMaster() {
 
       </div>
 
+      {/* Modale de fin de phase / confirmation d'élimination ou égalité */}
+      <PhaseEndModal 
+        isOpen={showPhaseEndModal}
+        phase={settings?.current_phase || 1}
+        hasTie={hasTie}
+        tiedTeams={tiedTeams}
+        eliminatedTeam={eliminatedTeam}
+        winnerTeam={winnerTeam}
+        onLaunchTieBreaker={handleLaunchTieBreaker}
+        onConfirmNextPhase={handleConfirmNextPhaseWithoutTie}
+        onCancel={() => setShowPhaseEndModal(false)}
+      />
+
+      {/* Modale de contrôle en direct du départage au buzzer */}
+      <TieBreakerModal 
+        isOpen={showTieBreakerModal}
+        tiedTeams={tiedTeams.length > 0 ? tiedTeams : activeTeams}
+        targetSpots={targetSpots}
+        bonusQuestion={currentBonusQuestion}
+        buzzedTeam={buzzedTeam}
+        failedTeamIds={failedTeamIds}
+        savedTeamIds={savedTeamIds}
+        onValidate={handleValidateTieAnswer}
+        onReject={handleRejectTieAnswer}
+        onNextQuestion={handleNextBonusQuestion}
+        onClose={() => setShowTieBreakerModal(false)}
+      />
+
+      {/* Modale de réinitialisation complète */}
       <ConfirmModal 
         isOpen={showResetModal}
         title="⚠️ Attention ⚠️"
@@ -417,4 +726,3 @@ export default function GameMaster() {
     </div>
   );
 }
-

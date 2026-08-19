@@ -41,8 +41,14 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
   const [startTime, setStartTime] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // État Realtime du départage au buzzer
+  const [buzzedTeamId, setBuzzedTeamId] = useState<string | null>(null);
+  const [failedTeamIds, setFailedTeamIds] = useState<string[]>([]);
+  const [tiedTeamIds, setTiedTeamIds] = useState<string[]>([]);
+
+  const regularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
   const team = teams.find(t => t.id === teamId);
-  const question = settings ? questions.find(q => q.order === settings.current_round) : null;
+  const question = settings ? regularQuestions.find(q => q.order === settings.current_round) : null;
 
   const teamColor = 
     teamId === 'A' ? 'bg-blue-600 border-blue-800 shadow-[0_6px_0_rgb(30,58,138)]' :
@@ -50,18 +56,55 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
     teamId === 'C' ? 'bg-green-600 border-green-800 shadow-[0_6px_0_rgb(21,128,61)]' :
     'bg-purple-600 border-purple-800 shadow-[0_6px_0_rgb(107,33,168)]';
 
-  // 1. Initialiser le channel pour le buzzer
+  // 1. Initialiser le channel Realtime pour le buzzer
   useEffect(() => {
-    const channel = supabase.channel('buzzer');
-    channel.subscribe();
+    const channel = supabase.channel('buzzer')
+      .on('broadcast', { event: 'buzz' }, (payload) => {
+        setBuzzedTeamId((current) => current ? current : payload.payload?.teamId);
+      })
+      .on('broadcast', { event: 'buzz_rejected' }, (payload) => {
+        setBuzzedTeamId(null);
+        if (payload.payload?.failedTeamIds) {
+          setFailedTeamIds(payload.payload.failedTeamIds);
+        } else if (payload.payload?.failedTeamId) {
+          setFailedTeamIds(prev => [...prev, payload.payload.failedTeamId]);
+        }
+      })
+      .on('broadcast', { event: 'start_tie_breaker' }, (payload) => {
+        setBuzzedTeamId(null);
+        setFailedTeamIds([]);
+        if (payload.payload?.teamsInTie) {
+          setTiedTeamIds(payload.payload.teamsInTie);
+        }
+      })
+      .on('broadcast', { event: 'next_bonus_question' }, () => {
+        setBuzzedTeamId(null);
+        setFailedTeamIds([]);
+      })
+      .on('broadcast', { event: 'tie_breaker_finished' }, () => {
+        setBuzzedTeamId(null);
+        setFailedTeamIds([]);
+        setTiedTeamIds([]);
+      })
+      .subscribe();
+
     return () => {
       supabase.removeChannel(channel);
     };
   }, []);
 
+  // Réinitialiser les états locaux du buzzer si le mode est désactivé
+  useEffect(() => {
+    if (!settings?.tie_breaker_mode) {
+      setBuzzedTeamId(null);
+      setFailedTeamIds([]);
+      setTiedTeamIds([]);
+    }
+  }, [settings?.tie_breaker_mode]);
+
   // 2. Préparer les choix et le timer à chaque changement de question/manche
   useEffect(() => {
-    if (question && settings?.is_playing && !settings.show_results) {
+    if (question && settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode) {
       if (question.phase === 1 || question.phase === 2) {
         const required = question.phase === 1 ? 2 : 4;
         const allWrongs = [...(question.wrong_answers || [])].sort(() => Math.random() - 0.5);
@@ -72,7 +115,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
       }
       setStartTime(Date.now());
     }
-  }, [question, settings?.is_playing, settings?.show_results]);
+  }, [question, settings?.current_round, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode]);
 
   // 3. Vérifier si l'équipe a déjà répondu pour cette manche
   useEffect(() => {
@@ -118,40 +161,116 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
     );
   }
 
-  // ÉCRAN 2 : Manche Bonus (Tie-Breaker)
+  // ÉCRAN 2 : Attente du lancement (Prioritaire sur tout le reste quand le jeu n'est pas lancé)
+  if (!settings.is_playing) {
+    return (
+      <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center">
+        <div className={`px-8 py-4 rounded-2xl ${teamColor} border-4 mb-12`}>
+          <h2 className="text-4xl text-white font-paytone drop-shadow-md">Équipe {team.name || team.id}</h2>
+        </div>
+        
+        <div className="bg-black/40 p-8 rounded-3xl border-2 border-white/10 w-full max-w-md">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white mx-auto mb-6"></div>
+          <p className="text-xl text-white font-sans opacity-80">En attente du Maître du Jeu...</p>
+        </div>
+        
+        <button onClick={onLeave} className="mt-12 text-white/50 hover:text-white underline font-sans">Changer d'équipe</button>
+      </div>
+    );
+  }
+
+  // ÉCRAN 3 : Manche Bonus (Départage / Mort Subite au Buzzer)
   if (settings.tie_breaker_mode) {
+    const isInTieBreaker = tiedTeamIds.length === 0 || tiedTeamIds.includes(teamId);
+    const hasFailedThisQuestion = failedTeamIds.includes(teamId);
+    const hasCurrentTeamBuzzed = buzzedTeamId === teamId;
+    const isOtherTeamBuzzed = buzzedTeamId !== null && buzzedTeamId !== teamId;
+
     const handleBuzz = () => {
-      if (liveAnswer) return;
+      if (buzzedTeamId || hasFailedThisQuestion) return;
       supabase.channel('buzzer').send({
         type: 'broadcast',
         event: 'buzz',
         payload: { teamId, timestamp: Date.now() }
       });
-      setLiveAnswer('BUZZ');
+      setBuzzedTeamId(teamId);
     };
 
+    // Cas 3.1 : L'équipe est déjà qualifiée
+    if (!isInTieBreaker) {
+      return (
+        <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center">
+          <div className="bg-green-950/60 p-8 rounded-3xl border-4 border-green-500 w-full max-w-md shadow-2xl backdrop-blur-md">
+            <div className="text-6xl mb-4">🏆</div>
+            <h2 className="text-3xl text-yellow-400 font-paytone mb-2">Qualifiés !</h2>
+            <p className="text-white font-sans text-lg mb-4">
+              Votre équipe est qualifiée pour la phase suivante !
+            </p>
+            <div className="bg-black/40 p-4 rounded-xl border border-white/10 text-white/70 text-sm">
+              Vos adversaires sont actuellement en manche de départage au buzzer.
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Cas 3.2 : L'équipe est en ballotage / mort subite
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center">
-        <h2 className="text-4xl text-3d-yellow font-paytone mb-2 drop-shadow-lg">Manche Bonus !</h2>
-        <p className="text-white/80 font-sans mb-12 uppercase tracking-widest font-bold">Le plus rapide l'emporte</p>
+        <div className="flex items-center gap-2 mb-4 bg-yellow-500/20 px-4 py-2 rounded-full border border-yellow-500/40">
+          <span className="text-2xl animate-bounce">⚡</span>
+          <span className="text-yellow-300 font-paytone text-lg uppercase tracking-wide">Mort Subite</span>
+        </div>
         
-        {liveAnswer === 'BUZZ' ? (
-          <div className="bg-black/50 p-12 rounded-full border-4 border-white/20 animate-pulse">
-            <p className="text-3xl text-white font-paytone uppercase tracking-widest">Buzz Enregistré</p>
+        <h2 className="text-4xl text-3d-yellow font-paytone mb-2 drop-shadow-lg">Manche Buzzer !</h2>
+        <p className="text-white/80 font-sans mb-8 uppercase tracking-widest font-bold text-sm">
+          Le premier qui buzze donne sa réponse à l'oral
+        </p>
+        
+        {hasCurrentTeamBuzzed ? (
+          <div className="bg-yellow-500/20 p-10 rounded-[3rem] border-4 border-yellow-400 animate-pulse max-w-md shadow-2xl">
+            <div className="text-6xl mb-4">🔔</div>
+            <p className="text-3xl text-yellow-300 font-paytone uppercase tracking-widest mb-3">
+              VOUS AVEZ BUZZÉ !
+            </p>
+            <p className="text-white text-lg font-sans font-bold">
+              Donnez votre réponse immédiatement à l'oral au Maître du Jeu !
+            </p>
+          </div>
+        ) : isOtherTeamBuzzed ? (
+          <div className="bg-blue-950/60 p-10 rounded-[3rem] border-4 border-blue-400 max-w-md shadow-2xl">
+            <div className="text-5xl mb-4 animate-spin">⏳</div>
+            <p className="text-2xl text-blue-300 font-paytone uppercase tracking-widest mb-2">
+              L'ÉQUIPE {buzzedTeamId} A BUZZÉ
+            </p>
+            <p className="text-white/80 text-sm font-sans">
+              Écoute de sa réponse par le Maître du Jeu... Tenez-vous prêts si sa réponse est fausse !
+            </p>
+          </div>
+        ) : hasFailedThisQuestion ? (
+          <div className="bg-red-950/60 p-8 rounded-3xl border-4 border-red-500 max-w-md shadow-2xl">
+            <div className="text-5xl mb-3">❌</div>
+            <p className="text-2xl text-red-300 font-paytone uppercase tracking-wide mb-2">
+              Mauvaise Réponse
+            </p>
+            <p className="text-white/70 text-sm font-sans">
+              Votre buzzer est verrouillé pour cette photo. En attente de la photo suivante...
+            </p>
           </div>
         ) : (
           <button 
             onClick={handleBuzz}
-            className="w-64 h-64 rounded-full bg-red-600 border-8 border-red-800 shadow-[0_15px_0_rgb(153,27,27)] text-white text-5xl font-paytone uppercase tracking-wider transition-all active:translate-y-4 active:shadow-none hover:bg-red-500 flex items-center justify-center"
+            className="w-64 h-64 rounded-full bg-gradient-to-b from-red-500 to-red-700 border-8 border-red-900 shadow-[0_15px_0_rgb(153,27,27),0_20px_40px_rgba(0,0,0,0.6)] text-white text-4xl font-paytone uppercase tracking-wider transition-all active:translate-y-4 active:shadow-none hover:from-red-400 hover:to-red-600 flex flex-col items-center justify-center gap-2 animate-pulse"
           >
-            Buzzer
+            <span className="text-4xl">🔔</span>
+            <span>BUZZER !</span>
           </button>
         )}
       </div>
     );
   }
 
-  // ÉCRAN 3 : Résultats Révélés
+  // ÉCRAN 4 : Résultats Révélés
   if (settings.show_results) {
     const isCorrect = question && liveAnswer && (
       getLevenshteinDistance(normalizeText(liveAnswer), normalizeText(question.correct_answer)) <= (question.correct_answer.length >= 6 ? 2 : 1) ||
@@ -184,26 +303,8 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
     );
   }
 
-  // ÉCRAN 4 : Attente du lancement
-  if (!settings.is_playing) {
-    return (
-      <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center">
-        <div className={`px-8 py-4 rounded-2xl ${teamColor} border-4 mb-12`}>
-          <h2 className="text-4xl text-white font-paytone drop-shadow-md">Équipe {team.name || team.id}</h2>
-        </div>
-        
-        <div className="bg-black/40 p-8 rounded-3xl border-2 border-white/10 w-full max-w-md">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white mx-auto mb-6"></div>
-          <p className="text-xl text-white font-sans opacity-80">En attente du Maître du Jeu...</p>
-        </div>
-        
-        <button onClick={onLeave} className="mt-12 text-white/50 hover:text-white underline font-sans">Changer d'équipe</button>
-      </div>
-    );
-  }
-
   // ==========================================
-  // ÉCRAN 5 : EN JEU (Affichage des questions)
+  // ÉCRAN 5 : EN JEU (Affichage des questions régulières)
   // ==========================================
 
   const submitAnswer = async (answer: string) => {
