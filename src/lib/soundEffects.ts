@@ -163,7 +163,9 @@ class AudioManager {
     onSource(null);
     if (!url || typeof window === 'undefined') return null;
 
-    const audio = new Audio(url);
+    const playableUrl = this.normalizeAudioUrl(url);
+
+    const audio = new Audio(playableUrl);
     audio.loop = true;
     audio.preload = 'auto';
     audio.crossOrigin = 'anonymous';
@@ -174,6 +176,14 @@ class AudioManager {
       onSource(source);
     }
     return audio;
+  }
+
+  private normalizeAudioUrl(url: string) {
+    const githubRawMatch = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/raw\/(?:refs\/heads\/)?([^/]+)\/(.+)$/);
+    if (!githubRawMatch) return url;
+
+    const [, owner, repository, branch, filePath] = githubRawMatch;
+    return `https://raw.githubusercontent.com/${owner}/${repository}/${branch}/${filePath}`;
   }
 
   private playSelectedMusic() {
