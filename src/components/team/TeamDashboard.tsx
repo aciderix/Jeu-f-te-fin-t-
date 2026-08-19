@@ -1,7 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { useGameState } from '../../hooks/useGameState';
-import { Question } from '../../types';
+import { useQuestions } from '../../hooks/useQuestions';
+
+// Fonction pour calculer la distance de Levenshtein (tolérance fautes de frappe)
+const getLevenshteinDistance = (a: string, b: string): number => {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const matrix = [];
+  for (let i = 0; i <= b.length; i++) { matrix[i] = [i]; }
+  for (let j = 0; j <= a.length; j++) { matrix[0][j] = j; }
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1));
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+};
+
+// Fonction pour normaliser le texte (sans accents, sans majuscules)
+const normalizeText = (text: string) => {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+};
 
 interface Props {
   teamId: string;
@@ -10,7 +34,7 @@ interface Props {
 
 export default function TeamDashboard({ teamId, onLeave }: Props) {
   const { settings, teams } = useGameState();
-  const [question, setQuestion] = useState<Question | null>(null);
+  const { questions } = useQuestions();
   const [choices, setChoices] = useState<string[]>([]);
   const [liveAnswer, setLiveAnswer] = useState<string | null>(null);
   const [textInput, setTextInput] = useState('');
@@ -18,6 +42,8 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const team = teams.find(t => t.id === teamId);
+  const question = settings ? questions.find(q => q.order === settings.current_round) : null;
+
   const teamColor = 
     teamId === 'A' ? 'bg-blue-600 border-blue-800 shadow-[0_6px_0_rgb(30,58,138)]' :
     teamId === 'B' ? 'bg-red-600 border-red-800 shadow-[0_6px_0_rgb(153,27,27)]' :
@@ -33,36 +59,31 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
     };
   }, []);
 
-  // 2. Récupérer la question actuelle et les réponses live à chaque changement de manche
+  // 2. Préparer les choix et le timer à chaque changement de question/manche
+  useEffect(() => {
+    if (question && settings?.is_playing && !settings.show_results) {
+      if (question.phase === 1 || question.phase === 2) {
+        const required = question.phase === 1 ? 2 : 4;
+        const allWrongs = [...(question.wrong_answers || [])].sort(() => Math.random() - 0.5);
+        const selected = [question.correct_answer, ...allWrongs.slice(0, required - 1)];
+        setChoices(selected.sort(() => Math.random() - 0.5));
+      } else {
+        setChoices([]);
+      }
+      setStartTime(Date.now());
+    }
+  }, [question, settings?.is_playing, settings?.show_results]);
+
+  // 3. Vérifier si l'équipe a déjà répondu pour cette manche
   useEffect(() => {
     if (!settings?.current_round) return;
 
-    const fetchRoundData = async () => {
-      // Fetch Question
-      const { data: qData } = await supabase
-        .from('questions')
-        .select('*')
-        .eq('order', settings.current_round)
-        .single();
-      
-      if (qData) {
-        setQuestion(qData);
-        // Mélanger les choix pour les phases 1 et 2
-        if (qData.phase === 1 || qData.phase === 2) {
-          const required = qData.phase === 1 ? 2 : 4;
-          const allWrongs = [...(qData.wrong_answers || [])].sort(() => Math.random() - 0.5);
-          const selected = [qData.correct_answer, ...allWrongs.slice(0, required - 1)];
-          setChoices(selected.sort(() => Math.random() - 0.5));
-        }
-        setStartTime(Date.now());
-      }
-
-      // Check if team already answered
+    const checkExistingAnswer = async () => {
       const { data: ansData } = await supabase
         .from('live_answers')
         .select('answer')
         .eq('team_id', teamId)
-        .single();
+        .maybeSingle();
       
       if (ansData) {
         setLiveAnswer(ansData.answer);
@@ -72,7 +93,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
       }
     };
 
-    fetchRoundData();
+    checkExistingAnswer();
   }, [settings?.current_round, teamId]);
 
   // Si l'équipe n'est pas trouvée (chargement en cours)
@@ -132,8 +153,10 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
 
   // ÉCRAN 3 : Résultats Révélés
   if (settings.show_results) {
-    const isCorrect = question && liveAnswer && 
-                      liveAnswer.trim().toLowerCase() === question.correct_answer.trim().toLowerCase();
+    const isCorrect = question && liveAnswer && (
+      getLevenshteinDistance(normalizeText(liveAnswer), normalizeText(question.correct_answer)) <= (question.correct_answer.length >= 6 ? 2 : 1) ||
+      liveAnswer.trim().toLowerCase() === question.correct_answer.trim().toLowerCase()
+    );
     
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center">
