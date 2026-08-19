@@ -1,0 +1,114 @@
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../../lib/supabaseClient';
+import { GameSettings } from '../../types';
+
+interface Props {
+  settings: GameSettings | null;
+}
+
+export default function AdminMediaManager({ settings }: Props) {
+  const [bgVideo, setBgVideo] = useState('');
+  const [bgAudio, setBgAudio] = useState('');
+  const [suspenseAudio, setSuspenseAudio] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+
+  useEffect(() => {
+    if (settings) {
+      setBgVideo(settings.bg_video_url || '');
+      setBgAudio(settings.bg_audio_url || '');
+      setSuspenseAudio(settings.suspense_audio_url || '');
+    }
+  }, [settings]);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setMessage(null);
+
+    try {
+      const { error } = await supabase
+        .from('game_settings')
+        .update({
+          bg_video_url: bgVideo,
+          bg_audio_url: bgAudio,
+          suspense_audio_url: suspenseAudio
+        })
+        .eq('id', 1);
+
+      if (error) {
+        throw error;
+      }
+
+      setMessage({ text: 'Médias enregistrés avec succès !', type: 'success' });
+    } catch (err: any) {
+      console.error(err);
+      setMessage({ 
+        text: "Erreur lors de la sauvegarde. Assurez-vous d'avoir ajouté les colonnes (bg_video_url, bg_audio_url, suspense_audio_url) à la table game_settings dans Supabase.", 
+        type: 'error' 
+      });
+    } finally {
+      setLoading(false);
+      // Effacer le message après 5 secondes
+      setTimeout(() => setMessage(null), 5000);
+    }
+  };
+
+  return (
+    <div className="bg-white/5 p-4 rounded-lg border border-white/10 mt-4">
+      <h3 className="text-white font-bold text-lg mb-4 flex items-center gap-2">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-purple-400"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+        Habillage sonore & visuel
+      </h3>
+
+      <form onSubmit={handleSave} className="space-y-4">
+        <div>
+          <label className="block text-white/70 text-xs mb-1 font-bold uppercase tracking-wider">URL Vidéo Jingle / Background</label>
+          <input 
+            type="url" 
+            value={bgVideo} 
+            onChange={e => setBgVideo(e.target.value)} 
+            className="w-full bg-black/50 border border-white/20 rounded p-2 text-white text-sm outline-none focus:border-purple-500 transition-colors" 
+            placeholder="https://..." 
+          />
+        </div>
+        
+        <div>
+          <label className="block text-white/70 text-xs mb-1 font-bold uppercase tracking-wider">URL Audio Background</label>
+          <input 
+            type="url" 
+            value={bgAudio} 
+            onChange={e => setBgAudio(e.target.value)} 
+            className="w-full bg-black/50 border border-white/20 rounded p-2 text-white text-sm outline-none focus:border-purple-500 transition-colors" 
+            placeholder="https://..." 
+          />
+        </div>
+
+        <div>
+          <label className="block text-white/70 text-xs mb-1 font-bold uppercase tracking-wider">URL Audio Suspense (Phase 3)</label>
+          <input 
+            type="url" 
+            value={suspenseAudio} 
+            onChange={e => setSuspenseAudio(e.target.value)} 
+            className="w-full bg-black/50 border border-white/20 rounded p-2 text-white text-sm outline-none focus:border-purple-500 transition-colors" 
+            placeholder="https://..." 
+          />
+        </div>
+
+        {message && (
+          <div className={`p-3 rounded text-sm font-medium ${message.type === 'success' ? 'bg-green-900/50 text-green-200 border border-green-500/50' : 'bg-red-900/50 text-red-200 border border-red-500/50'}`}>
+            {message.text}
+          </div>
+        )}
+
+        <button 
+          type="submit" 
+          disabled={loading}
+          className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2 px-4 rounded border border-purple-400 transition-colors shadow-sm disabled:opacity-50"
+        >
+          {loading ? 'Sauvegarde...' : 'Enregistrer les médias'}
+        </button>
+      </form>
+    </div>
+  );
+}

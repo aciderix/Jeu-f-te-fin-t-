@@ -1,0 +1,6 @@
+{
+  "name": "À qui qu'elle est cette tête de visage ?",
+  "description": "Un jeu de quiz festif multijoueur sur grand écran et tablettes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

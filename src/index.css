@@ -1,0 +1,50 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Paytone+One&display=swap');
+
+@theme {
+  --font-paytone: "Paytone One", sans-serif;
+  --color-game-blue-dark: #001f5c;
+  --color-game-blue-light: #0050d2;
+  --color-game-yellow: #ffdb00;
+}
+
+body {
+  font-family: var(--font-paytone);
+  background-color: var(--color-game-blue-dark);
+  color: white;
+}
+
+.bg-sunburst {
+    background-image: 
+        repeating-conic-gradient(
+            from 0deg,
+            transparent 0deg 15deg,
+            rgba(255, 255, 255, 0.05) 15deg 30deg
+        ),
+        radial-gradient(circle, var(--color-game-blue-light) 0%, var(--color-game-blue-dark) 100%);
+    background-attachment: fixed;
+}
+
+.text-3d-yellow {
+  color: var(--color-game-yellow);
+  text-shadow: 
+    0px 3px 0px #b38600,
+    0px 6px 0px #805500,
+    0px 9px 10px rgba(0,0,0,0.5),
+    -2px -2px 0 #fff,  
+    2px -2px 0 #fff,
+    -2px  2px 0 #fff,
+    2px  2px 0 #fff;
+}
+
+.text-3d-blue {
+  color: #3b82f6;
+  text-shadow: 
+    0px 3px 0px #1d4ed8,
+    0px 6px 0px #1e3a8a,
+    0px 9px 10px rgba(0,0,0,0.5),
+    -2px -2px 0 #fff,  
+    2px -2px 0 #fff,
+    -2px  2px 0 #fff,
+    2px  2px 0 #fff;
+}
