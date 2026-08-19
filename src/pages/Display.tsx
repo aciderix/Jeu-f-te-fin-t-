@@ -77,7 +77,7 @@ export default function Display() {
             className="w-full flex justify-center mb-8 drop-shadow-2xl"
           >
             <motion.img 
-              src="/logo.png" 
+              src={`${import.meta.env.BASE_URL}logo.png`} 
               alt="À qui qu'elle est cette Tête de visage ?" 
               animate={{ scale: [1, 1.05, 1], rotate: [-2, 2, -2] }} 
               transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }} 

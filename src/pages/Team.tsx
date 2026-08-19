@@ -50,7 +50,7 @@ export default function Team() {
       >
         <span className="block text-xl md:text-2xl text-white font-sans font-bold drop-shadow-md mb-2 md:mb-4 uppercase tracking-widest">Interface Équipe</span>
         <motion.img 
-          src="/logo.png" 
+          src={`${import.meta.env.BASE_URL}logo.png`} 
           alt="À qui qu'elle est cette Tête de visage ?" 
           animate={{ scale: [1, 1.05, 1], rotate: [-2, 2, -2] }} 
           transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut" }} 

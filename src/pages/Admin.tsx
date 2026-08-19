@@ -32,7 +32,7 @@ export default function Admin() {
         
         <div className="w-full max-w-xs mb-8 drop-shadow-2xl">
           <img 
-            src="/logo.png" 
+            src={`${import.meta.env.BASE_URL}logo.png`} 
             alt="Logo" 
             className="w-full h-auto object-contain max-h-[20vh] animate-pulse"
           />

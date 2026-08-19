@@ -34,7 +34,7 @@ export default function Hub() {
         className="z-10 w-full max-w-2xl flex justify-center drop-shadow-2xl"
       >
         <motion.img 
-          src="/logo.png" 
+          src={`${import.meta.env.BASE_URL}logo.png`} 
           alt="À qui qu'elle est cette Tête de visage ?" 
           animate={{ scale: [1, 1.05, 1], rotate: [-1, 1, -1] }} 
           transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }} 
