@@ -1,0 +1,57 @@
+name: Deploy to GitHub Pages
+
+on:
+  # Se déclenche à chaque push sur la branche main ou master
+  push:
+    branches: ["main", "master"]
+  # Permet aussi de lancer le déploiement manuellement depuis l'onglet "Actions"
+  workflow_dispatch:
+
+# Autorisations nécessaires pour que GitHub Actions puisse publier sur Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Permet d'annuler les anciens déploiements si un nouveau est lancé
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+      
+      - name: Configuration de Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          
+      - name: Installation des dépendances
+        run: npm install
+        
+      - name: Build de l'application (Vite)
+        run: npm run build
+        env:
+          # Injection des clés publiques Supabase depuis les secrets GitHub
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          
+      - name: Configuration de GitHub Pages
+        uses: actions/configure-pages@v4
+        
+      - name: Upload des fichiers compilés
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './dist'
+          
+      - name: Déploiement sur GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
