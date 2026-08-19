@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { Team } from '../../types';
+import { ConfirmModal } from '../ui/ConfirmModal';
 
 interface Props {
   teams: Team[];
@@ -10,6 +11,7 @@ export default function AdminTeamManager({ teams }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [tempName, setTempName] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
 
   const handleEditClick = (team: Team) => {
     setEditingId(team.id);
@@ -26,18 +28,16 @@ export default function AdminTeamManager({ teams }: Props) {
     setLoading(false);
   };
 
-  const handleResetScores = async () => {
-    if (window.confirm("Attention : cela va remettre tous les scores à 0 et réanimer toutes les équipes. Continuer ?")) {
-      setLoading(true);
-      const { error } = await supabase.from('teams')
-        .update({ score: 0, is_eliminated: false })
-        .in('id', ['A', 'B', 'C', 'D']);
-        
-      if (error) {
-        alert("Erreur lors de la réinitialisation : " + error.message);
-      }
-      setLoading(false);
+  const executeResetScores = async () => {
+    setLoading(true);
+    const { error } = await supabase.from('teams')
+      .update({ score: 0, is_eliminated: false })
+      .in('id', ['A', 'B', 'C', 'D']);
+      
+    if (error) {
+      alert("Erreur lors de la réinitialisation : " + error.message);
     }
+    setLoading(false);
   };
 
   return (
@@ -45,7 +45,7 @@ export default function AdminTeamManager({ teams }: Props) {
       <div className="flex justify-between items-center mb-4">
         <h3 className="text-white font-bold text-lg">Configuration des équipes</h3>
         <button 
-          onClick={handleResetScores}
+          onClick={() => setShowResetModal(true)}
           disabled={loading || teams.length === 0}
           className="bg-red-900/50 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded border border-red-500/50 transition-colors disabled:opacity-50"
         >
@@ -105,6 +105,14 @@ export default function AdminTeamManager({ teams }: Props) {
           ))}
         </div>
       )}
+
+      <ConfirmModal 
+        isOpen={showResetModal}
+        title="Réinitialiser les scores"
+        message="Attention : cela va remettre tous les scores à 0 et réanimer toutes les équipes. Continuer ?"
+        onConfirm={executeResetScores}
+        onCancel={() => setShowResetModal(false)}
+      />
     </div>
   );
 }

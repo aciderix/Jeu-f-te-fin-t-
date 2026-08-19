@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { Question } from '../../types';
+import { ConfirmModal } from '../ui/ConfirmModal';
 
 interface Props {
   questions: Question[];
@@ -7,6 +9,8 @@ interface Props {
 }
 
 export default function QuestionList({ questions, onDelete, loading }: Props) {
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
   if (loading) {
     return (
       <div className="bg-black/40 p-6 rounded-2xl border-2 border-white/20 flex flex-col items-center justify-center h-[600px] shadow-xl">
@@ -61,11 +65,7 @@ export default function QuestionList({ questions, onDelete, loading }: Props) {
 
               {/* Delete Button */}
               <button 
-                onClick={() => {
-                  if (window.confirm("Voulez-vous vraiment supprimer cette manche ?")) {
-                    onDelete(q.id);
-                  }
-                }} 
+                onClick={() => setDeleteId(q.id)} 
                 className="absolute top-4 right-4 text-red-500 hover:text-white p-2 bg-black/40 hover:bg-red-600 rounded-lg transition-colors border border-red-500/30 hover:border-red-500" 
                 title="Supprimer"
               >
@@ -75,6 +75,16 @@ export default function QuestionList({ questions, onDelete, loading }: Props) {
           ))}
         </div>
       )}
+
+      <ConfirmModal 
+        isOpen={deleteId !== null}
+        title="Supprimer la manche"
+        message="Voulez-vous vraiment supprimer cette manche ?"
+        onConfirm={() => {
+          if (deleteId) onDelete(deleteId);
+        }}
+        onCancel={() => setDeleteId(null)}
+      />
     </div>
   );
 }

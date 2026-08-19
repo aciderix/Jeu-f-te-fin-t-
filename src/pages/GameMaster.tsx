@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabaseClient';
 import { useGameState } from '../hooks/useGameState';
 import { useQuestions } from '../hooks/useQuestions';
 import { useLiveAnswers } from '../hooks/useLiveAnswers';
+import { ConfirmModal } from '../components/ui/ConfirmModal';
 
 // Fonction pour calculer la distance de Levenshtein (nombre de fautes de frappe/lettres de différence)
 const getLevenshteinDistance = (a: string, b: string): number => {
@@ -34,6 +35,8 @@ export default function GameMaster() {
   const [pinCode, setPinCode] = useState('');
   const [authError, setAuthError] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [activeTab, setActiveTab] = useState<'controls' | 'teams'>('controls');
 
   const { settings, teams, error: gameStateError } = useGameState();
   const { questions } = useQuestions();
@@ -131,6 +134,27 @@ export default function GameMaster() {
     setIsProcessing(false);
   };
 
+  const executeRestartGame = async () => {
+    setIsProcessing(true);
+    
+    // Remettre les scores des équipes à 0 et les déséliminer
+    await supabase.from('teams').update({ score: 0, is_eliminated: false }).neq('id', 'dummy');
+    
+    // Nettoyer les réponses
+    await clearAnswers();
+
+    // Réinitialiser les paramètres
+    await supabase.from('game_settings').update({
+      is_playing: false,
+      current_round: 1,
+      current_phase: 1,
+      show_results: false,
+      tie_breaker_mode: false
+    }).eq('id', 1);
+
+    setIsProcessing(false);
+  };
+
   if (!isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center relative overflow-hidden">
@@ -176,16 +200,26 @@ export default function GameMaster() {
   return (
     <div className="flex flex-col items-center w-full min-h-screen p-4 md:p-8">
       {/* Header */}
-      <div className="w-full max-w-7xl flex flex-col md:flex-row justify-between items-center mb-8 gap-4 bg-black/40 p-4 md:px-8 md:py-6 rounded-2xl border-2 border-white/10 backdrop-blur-sm">
+      <div className="w-full max-w-7xl flex flex-col md:flex-row justify-between items-center mb-6 gap-4 bg-black/40 p-4 md:px-8 md:py-6 rounded-2xl border-2 border-white/10 backdrop-blur-sm">
         <div className="flex items-center gap-4">
           <div className="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center border-2 border-white shadow-[0_4px_0_rgb(107,33,168)]">
              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
           </div>
           <h1 className="text-3xl md:text-4xl text-3d-yellow uppercase m-0">Tableau de bord MDJ</h1>
         </div>
-        <Link to="/" className="text-white font-bold font-sans bg-white/10 hover:bg-white/20 px-6 py-3 rounded-xl border border-white/20 transition-all">
-          Quitter
-        </Link>
+        
+        <div className="flex gap-3">
+          <button 
+            onClick={() => setShowResetModal(true)}
+            className="flex items-center justify-center bg-red-900/40 hover:bg-red-600 border border-red-500/50 text-white p-3 rounded-xl transition-colors shadow-lg"
+            title="Annuler et réinitialiser la partie"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+          </button>
+          <Link to="/" className="text-white flex items-center font-bold font-sans bg-white/10 hover:bg-white/20 px-6 py-3 rounded-xl border border-white/20 transition-all shadow-lg">
+            Quitter
+          </Link>
+        </div>
       </div>
 
       {gameStateError && (
@@ -195,11 +229,33 @@ export default function GameMaster() {
         </div>
       )}
 
+      {/* Tabs */}
+      <div className="w-full max-w-7xl flex justify-center gap-4 mb-8">
+        <button 
+          onClick={() => setActiveTab('controls')} 
+          className={`flex-1 md:flex-none px-6 md:px-12 py-4 rounded-full font-paytone text-lg md:text-xl transition-all border-2 ${activeTab === 'controls' ? 'bg-purple-600 border-purple-400 text-white shadow-[0_0_20px_rgba(147,51,234,0.5)]' : 'bg-black/40 border-white/10 text-white/60 hover:bg-white/10 hover:text-white'}`}
+        >
+          Contrôles
+        </button>
+        <button 
+          onClick={() => setActiveTab('teams')} 
+          className={`flex-1 md:flex-none px-6 md:px-12 py-4 rounded-full font-paytone text-lg md:text-xl transition-all border-2 relative ${activeTab === 'teams' ? 'bg-blue-600 border-blue-400 text-white shadow-[0_0_20px_rgba(37,99,235,0.5)]' : 'bg-black/40 border-white/10 text-white/60 hover:bg-white/10 hover:text-white'}`}
+        >
+          État des Équipes
+          {liveAnswers.length > 0 && (
+            <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs font-sans font-bold w-6 h-6 flex items-center justify-center rounded-full animate-pulse border-2 border-white shadow-lg">
+              {liveAnswers.length}
+            </span>
+          )}
+        </button>
+      </div>
+
       {/* Main Content */}
-      <div className="w-full max-w-7xl grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <div className="w-full max-w-7xl flex flex-col gap-8">
         
-        {/* Colonne Gauche : Contrôles du Jeu */}
-        <div className="lg:col-span-5 flex flex-col gap-6">
+        {/* Vue Contrôles */}
+        {activeTab === 'controls' && (
+          <div className="flex flex-col gap-6 w-full max-w-3xl mx-auto">
           <div className="bg-black/40 p-6 rounded-3xl border-2 border-white/20 shadow-xl">
             <h2 className="text-2xl text-white font-paytone mb-6">Contrôles</h2>
             
@@ -265,17 +321,18 @@ export default function GameMaster() {
             </div>
           )}
         </div>
+        )}
 
-        {/* Colonne Droite : Status des Équipes & Réponses */}
-        <div className="lg:col-span-7 bg-black/40 p-4 md:p-6 rounded-3xl border-2 border-white/20 shadow-xl flex flex-col h-[60vh] md:h-[75vh] min-h-[500px]">
-          <h2 className="text-xl md:text-2xl text-white font-paytone mb-4 md:mb-6 flex items-center justify-between">
-            <span>État des Équipes</span>
-            <span className="text-xs md:text-sm font-sans font-normal bg-blue-600/30 text-blue-300 px-3 py-1 rounded-full border border-blue-500/30">
-              {liveAnswers.length} Réponse(s)
-            </span>
-          </h2>
-          
-          <div className="flex flex-col gap-4 overflow-y-auto pr-2">
+        {activeTab === 'teams' && (
+          <div className="w-full max-w-4xl mx-auto bg-black/40 p-4 md:p-6 rounded-3xl border-2 border-white/20 shadow-xl flex flex-col h-[70vh] min-h-[500px]">
+            <h2 className="text-xl md:text-2xl text-white font-paytone mb-4 md:mb-6 flex items-center justify-between">
+              <span>État des Équipes</span>
+              <span className="text-xs md:text-sm font-sans font-normal bg-blue-600/30 text-blue-300 px-3 py-1 rounded-full border border-blue-500/30">
+                {liveAnswers.length} Réponse(s)
+              </span>
+            </h2>
+            
+            <div className="flex flex-col gap-4 overflow-y-auto pr-2">
             {teams.map(team => {
               const teamAnswer = liveAnswers.find(a => a.team_id === team.id);
               const isEliminated = team.is_eliminated;
@@ -343,9 +400,20 @@ export default function GameMaster() {
               );
             })}
           </div>
-        </div>
+          </div>
+        )}
 
       </div>
+
+      <ConfirmModal 
+        isOpen={showResetModal}
+        title="⚠️ Attention ⚠️"
+        message="Êtes-vous sûr de vouloir ANNULER ET RÉINITIALISER TOUTE LA PARTIE ? Les scores seront remis à 0."
+        onConfirm={executeRestartGame}
+        onCancel={() => setShowResetModal(false)}
+        confirmText="Oui, réinitialiser"
+        cancelText="Non, annuler"
+      />
     </div>
   );
 }
