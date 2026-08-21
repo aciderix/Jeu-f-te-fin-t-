@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { GameSettings } from '../../types';
 
@@ -8,20 +8,16 @@ interface Props {
 
 export default function AdminMediaManager({ settings }: Props) {
   const [bgVideo, setBgVideo] = useState('');
-  const [bgAudio, setBgAudio] = useState('');
-  const [suspenseAudio, setSuspenseAudio] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
 
   useEffect(() => {
     if (settings) {
       setBgVideo(settings.bg_video_url || '');
-      setBgAudio(settings.bg_audio_url || '');
-      setSuspenseAudio(settings.suspense_audio_url || '');
     }
   }, [settings]);
 
-  const handleSave = async (e: React.FormEvent) => {
+  const handleSaveVideo = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setMessage(null);
@@ -29,27 +25,20 @@ export default function AdminMediaManager({ settings }: Props) {
     try {
       const { error } = await supabase
         .from('game_settings')
-        .update({
-          bg_video_url: bgVideo,
-          bg_audio_url: bgAudio,
-          suspense_audio_url: suspenseAudio
-        })
+        .update({ bg_video_url: bgVideo })
         .eq('id', 1);
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
-      setMessage({ text: 'Médias enregistrés avec succès !', type: 'success' });
+      setMessage({ text: 'Vidéo enregistrée avec succès !', type: 'success' });
     } catch (err: any) {
       console.error(err);
-      setMessage({ 
-        text: "Erreur lors de la sauvegarde. Assurez-vous d'avoir ajouté les colonnes (bg_video_url, bg_audio_url, suspense_audio_url) à la table game_settings dans Supabase.", 
-        type: 'error' 
+      setMessage({
+        text: "Erreur lors de la sauvegarde de la vidéo.",
+        type: 'error'
       });
     } finally {
       setLoading(false);
-      // Effacer le message après 5 secondes
       setTimeout(() => setMessage(null), 5000);
     }
   };
@@ -61,37 +50,26 @@ export default function AdminMediaManager({ settings }: Props) {
         Habillage sonore & visuel
       </h3>
 
-      <form onSubmit={handleSave} className="space-y-4">
+      <div className="mb-5 rounded-lg border border-purple-400/30 bg-purple-950/30 p-4 text-sm text-white/80">
+        <p className="font-bold text-purple-200">Sons locaux du projet</p>
+        <p className="mt-1 leading-relaxed">
+          Les musiques et bruitages sont lus exclusivement depuis <code className="rounded bg-black/40 px-1.5 py-0.5 text-purple-100">public/audio/</code>.
+          Il n’est plus nécessaire de renseigner une URL ni de modifier Supabase.
+        </p>
+        <p className="mt-2 leading-relaxed text-white/60">
+          Remplacez simplement les fichiers MP3 en conservant leur nom. La liste complète des fichiers et de leurs déclencheurs est disponible dans <code className="rounded bg-black/40 px-1.5 py-0.5">public/audio/README.md</code>.
+        </p>
+      </div>
+
+      <form onSubmit={handleSaveVideo} className="space-y-4">
         <div>
           <label className="block text-white/70 text-xs mb-1 font-bold uppercase tracking-wider">URL Vidéo Jingle / Background</label>
-          <input 
-            type="url" 
-            value={bgVideo} 
-            onChange={e => setBgVideo(e.target.value)} 
-            className="w-full bg-black/50 border border-white/20 rounded p-2 text-white text-sm outline-none focus:border-purple-500 transition-colors" 
-            placeholder="https://..." 
-          />
-        </div>
-        
-        <div>
-          <label className="block text-white/70 text-xs mb-1 font-bold uppercase tracking-wider">URL Audio Background</label>
-          <input 
-            type="url" 
-            value={bgAudio} 
-            onChange={e => setBgAudio(e.target.value)} 
-            className="w-full bg-black/50 border border-white/20 rounded p-2 text-white text-sm outline-none focus:border-purple-500 transition-colors" 
-            placeholder="https://..." 
-          />
-        </div>
-
-        <div>
-          <label className="block text-white/70 text-xs mb-1 font-bold uppercase tracking-wider">URL Audio Suspense (Phase 3)</label>
-          <input 
-            type="url" 
-            value={suspenseAudio} 
-            onChange={e => setSuspenseAudio(e.target.value)} 
-            className="w-full bg-black/50 border border-white/20 rounded p-2 text-white text-sm outline-none focus:border-purple-500 transition-colors" 
-            placeholder="https://..." 
+          <input
+            type="url"
+            value={bgVideo}
+            onChange={e => setBgVideo(e.target.value)}
+            className="w-full bg-black/50 border border-white/20 rounded p-2 text-white text-sm outline-none focus:border-purple-500 transition-colors"
+            placeholder="https://..."
           />
         </div>
 
@@ -101,12 +79,12 @@ export default function AdminMediaManager({ settings }: Props) {
           </div>
         )}
 
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           disabled={loading}
           className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2 px-4 rounded border border-purple-400 transition-colors shadow-sm disabled:opacity-50"
         >
-          {loading ? 'Sauvegarde...' : 'Enregistrer les médias'}
+          {loading ? 'Sauvegarde...' : 'Enregistrer la vidéo'}
         </button>
       </form>
     </div>

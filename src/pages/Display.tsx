@@ -9,8 +9,9 @@ import { Question } from '../types';
 import { useTieBreakerSession } from '../hooks/useTieBreakerSession';
 
 import { getDeterministicChoices, isAnswerCorrect } from '../lib/utils';
+import { GameSequenceState, SEQUENCE_DURATIONS } from '../lib/gameSequence';
 
-type RoundStatus = 'intro' | 'active' | 'time_up' | 'reveal' | 'phase_summary' | 'finale' | 'tie_breaker';
+type RoundStatus = 'intro' | 'active' | 'time_up' | 'reveal' | 'phase_summary' | 'finale' | 'tie_breaker' | 'waiting_start';
 
 interface ScoreCountUpProps {
   start: number;
@@ -62,11 +63,15 @@ export default function Display() {
   const [imageLoading, setImageLoading] = useState(false);
   const [roundStatus, setRoundStatus] = useState<RoundStatus>('intro');
   const [revealFrozen, setRevealFrozen] = useState(false);
+  const [sequenceNow, setSequenceNow] = useState(() => Date.now());
+  
   const lastCountdownMarkRef = useRef<number | null>(null);
   const lastTimeUpRoundRef = useRef<number | null>(null);
   const lastRevealQuestionRef = useRef<string | null>(null);
   const lastPhaseSummaryQuestionRef = useRef<string | null>(null);
   const finalePlayedRef = useRef(false);
+  const lastSequenceAudioRef = useRef<string | null>(null);
+  
 
   // Sync with settings if reloaded
   useEffect(() => {
@@ -75,6 +80,15 @@ export default function Display() {
     setFailedTeamIds(tieBreakerSession.failed_team_ids);
     setBuzzWinner(tieBreakerSession.buzzed_team_id);
   }, [tieBreakerSession]);
+
+  // Horloge de rendu : elle n'invente aucune transition, elle rend uniquement
+  // les échéances centralisées dans Supabase.
+  useEffect(() => {
+    if (!settings?.sequence_started_at && !settings?.question_started_at) return;
+    setSequenceNow(Date.now());
+    const timer = window.setInterval(() => setSequenceNow(Date.now()), 100);
+    return () => window.clearInterval(timer);
+  }, [settings?.sequence_started_at, settings?.question_started_at]);
 
   const regularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
   const bonusQuestions = questions.filter(q => q.phase === 0 || q.is_bonus);
@@ -96,7 +110,59 @@ export default function Display() {
     : -1;
 
   const isFinale = settings?.current_phase === 4;
-  const displayStatus = isFinale ? 'finale' : settings?.tie_breaker_mode ? 'tie_breaker' : roundStatus;
+  const databaseSequence = settings?.sequence_state as GameSequenceState | undefined;
+  const sequenceElapsed = settings?.sequence_started_at
+    ? Math.max(0, sequenceNow - new Date(settings.sequence_started_at).getTime())
+    : 0;
+  const questionStartedAt = settings?.question_started_at
+    ? new Date(settings.question_started_at).getTime()
+    : null;
+  const questionExpired = Boolean(
+    currentQuestion
+    && questionStartedAt
+    && sequenceNow >= questionStartedAt + currentQuestion.duration * 1_000
+  );
+
+  // Aucun écran ne décide lui-même de la prochaine transition : tous lisent le même
+  // état et le même horodatage dans Supabase.
+  const synchronizedSequence: GameSequenceState | 'time_up' | null = (() => {
+    if (!databaseSequence) return null;
+    if (databaseSequence === 'game_start') {
+      if (sequenceElapsed < SEQUENCE_DURATIONS.game_start) return 'game_start';
+      if (sequenceElapsed < SEQUENCE_DURATIONS.game_start + SEQUENCE_DURATIONS.phase_intro) return 'phase_intro';
+      if (sequenceElapsed < SEQUENCE_DURATIONS.game_start + SEQUENCE_DURATIONS.phase_intro + SEQUENCE_DURATIONS.round_intro) return 'round_intro';
+      return questionExpired ? 'time_up' : 'active';
+    }
+    if (databaseSequence === 'phase_intro') {
+      if (sequenceElapsed < SEQUENCE_DURATIONS.phase_intro) return 'phase_intro';
+      if (sequenceElapsed < SEQUENCE_DURATIONS.phase_intro + SEQUENCE_DURATIONS.round_intro) return 'round_intro';
+      return questionExpired ? 'time_up' : 'active';
+    }
+    if (databaseSequence === 'round_intro') {
+      return sequenceElapsed < SEQUENCE_DURATIONS.round_intro ? 'round_intro' : (questionExpired ? 'time_up' : 'active');
+    }
+    return databaseSequence === 'active' && questionExpired ? 'time_up' : databaseSequence;
+  })();
+
+  const displayStatus = synchronizedSequence
+    ?? (isFinale
+      ? 'finale'
+      : settings?.tie_breaker_mode
+        ? 'tie_breaker'
+        : roundStatus);
+
+  useEffect(() => {
+    if (!databaseSequence || !settings?.sequence_started_at) return;
+    const sequenceKey = `${databaseSequence}:${settings.sequence_started_at}`;
+    if (lastSequenceAudioRef.current === sequenceKey) return;
+
+    lastSequenceAudioRef.current = sequenceKey;
+    if (databaseSequence === 'game_start') {
+      audioManager.playStart();
+    } else if (databaseSequence === 'phase_intro' || databaseSequence === 'round_intro') {
+      audioManager.playNewRound();
+    }
+  }, [databaseSequence, settings?.sequence_started_at]);
 
   const phaseLabel = currentQuestion?.phase === 1
     ? 'PHASE 1 - 2 PROPOSITIONS'
@@ -145,7 +211,8 @@ export default function Display() {
     reveal: 'RÉVÉLATION',
     phase_summary: 'FIN DE PHASE',
     finale: 'GRANDE FINALE',
-    tie_breaker: 'DÉPARTAGE EN COURS'
+    tie_breaker: 'DÉPARTAGE EN COURS',
+    waiting_start: 'EN ATTENTE'
   };
 
   // Question bonus active
@@ -161,37 +228,23 @@ export default function Display() {
     setImageLoading(Boolean(currentQuestion?.photo_url || currentBonusQuestion?.photo_url));
   }, [currentQuestion?.id, currentBonusQuestion?.id]);
 
-  // Moteur local des sous-etats d'une manche. Les changements de question
-  // relancent l'introduction; les signaux persistés pilotent ensuite le reste.
+  // État de secours pour une ancienne partie ne possédant pas encore
+  // sequence_state. Les séquences récentes sont rendues directement depuis Supabase.
   useEffect(() => {
-    if (!settings?.is_playing || settings.current_phase === 4) {
-      setRoundStatus(settings?.current_phase === 4 ? 'finale' : 'intro');
-      return;
-    }
+    if (!settings || settings.sequence_state) return;
 
-    if (settings.tie_breaker_mode) {
+    if (settings.current_phase === 4) {
+      setRoundStatus('finale');
+    } else if (settings.tie_breaker_mode) {
       setRoundStatus('tie_breaker');
-      return;
+    } else if (settings.show_results) {
+      setRoundStatus('reveal');
+    } else if (settings.question_started_at) {
+      setRoundStatus('active');
+    } else {
+      setRoundStatus('waiting_start');
     }
-
-    setRoundStatus('intro');
-    const introTimer = window.setTimeout(() => {
-      if (settings.show_results) {
-        setRoundStatus('reveal');
-      } else if (settings.question_started_at) {
-        audioManager.playStart();
-        setRoundStatus('active');
-      }
-    }, 1500);
-
-    return () => window.clearTimeout(introTimer);
-  }, [settings?.is_playing, settings?.current_round, settings?.current_phase, settings?.tie_breaker_mode, currentQuestion?.id]);
-
-  useEffect(() => {
-    if (!settings?.question_started_at || settings.show_results || settings.tie_breaker_mode || roundStatus !== 'intro') return;
-    audioManager.playStart();
-    setRoundStatus('active');
-  }, [settings?.question_started_at, settings?.show_results, settings?.tie_breaker_mode, roundStatus]);
+  }, [settings?.sequence_state, settings?.current_phase, settings?.tie_breaker_mode, settings?.show_results, settings?.question_started_at]);
 
   useEffect(() => {
     if (settings?.tie_breaker_mode || settings?.current_phase === 4) return;
@@ -209,7 +262,7 @@ export default function Display() {
   }, [roundStatus, timeLeft, settings?.show_results, settings?.question_started_at]);
 
   useEffect(() => {
-    if (roundStatus !== 'reveal') {
+    if (displayStatus !== 'reveal') {
       setRevealFrozen(false);
       return;
     }
@@ -217,17 +270,20 @@ export default function Display() {
     setRevealFrozen(true);
     const freezeTimer = window.setTimeout(() => setRevealFrozen(false), 200);
     return () => window.clearTimeout(freezeTimer);
-  }, [roundStatus]);
+  }, [displayStatus]);
 
+  // Le passage à phase_summary ne se fait plus automatiquement.
+  // Il est déclenché par un état explicite 'phase_summary' enregistré dans game_settings,
+  // ou en déduisant que is_playing est false alors qu'on vient de terminer une phase.
   useEffect(() => {
-    if (roundStatus !== 'reveal' || !isPhaseEnd) return;
-    const summaryTimer = window.setTimeout(() => setRoundStatus('phase_summary'), 3000);
-    return () => window.clearTimeout(summaryTimer);
-  }, [roundStatus, isPhaseEnd]);
+    if (isPhaseEnd && settings?.show_results && settings?.is_playing === false && !settings?.tie_breaker_mode && settings?.current_phase < 4) {
+      setRoundStatus('phase_summary');
+    }
+  }, [isPhaseEnd, settings?.show_results, settings?.is_playing, settings?.tie_breaker_mode, settings?.current_phase]);
 
   useEffect(() => {
     if (!settings?.is_playing || !currentQuestion || settings.tie_breaker_mode) return;
-    audioManager.playNewRound();
+    // Le son de nouvelle manche est désormais géré par les séquences de transition.
     lastCountdownMarkRef.current = null;
     lastTimeUpRoundRef.current = null;
     lastRevealQuestionRef.current = null;
@@ -242,13 +298,16 @@ export default function Display() {
   }, [settings?.bg_audio_url, settings?.suspense_audio_url, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode]);
 
   useEffect(() => {
-    if (displayStatus === 'active' && timeLeft > 0) {
+        if (displayStatus === 'active' && timeLeft > 0) {
       const seconds = Math.ceil(timeLeft);
       const shouldTick = seconds <= 5 || (seconds <= 10 && seconds % 2 === 0);
       if (shouldTick && lastCountdownMarkRef.current !== seconds) {
         lastCountdownMarkRef.current = seconds;
         audioManager.playCountdownTick(seconds <= 5);
       }
+    } else {
+      // Empêche un fichier tick.mp3 un peu long de continuer après le zéro.
+      audioManager.stopCountdownTick();
     }
 
     if (displayStatus === 'time_up' && settings?.current_round !== undefined && lastTimeUpRoundRef.current !== settings.current_round) {
@@ -350,7 +409,7 @@ export default function Display() {
       if (settings.question_started_at) {
         const start = new Date(settings.question_started_at).getTime();
         const elapsed = (Date.now() - start) / 1000;
-        setTimeLeft(Math.max(0, currentQuestion.duration - elapsed));
+        setTimeLeft(Math.max(0, Math.min(currentQuestion.duration, currentQuestion.duration - elapsed)));
       } else {
         setTimeLeft(currentQuestion.duration);
       }
@@ -365,19 +424,19 @@ export default function Display() {
 
   // Décompte du Timer
   useEffect(() => {
-    if (settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode && roundStatus === 'active' && settings.question_started_at && timeLeft > 0) {
+    if (settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode && displayStatus === 'active' && settings.question_started_at && timeLeft > 0) {
       const timer = setInterval(() => {
         if (settings?.question_started_at && currentQuestion) {
            const start = new Date(settings.question_started_at).getTime();
            const elapsed = (Date.now() - start) / 1000;
-           setTimeLeft(Math.max(0, currentQuestion.duration - elapsed));
+           setTimeLeft(Math.max(0, Math.min(currentQuestion.duration, currentQuestion.duration - elapsed)));
         } else {
            setTimeLeft(prev => Math.max(0, prev - 0.1));
         }
       }, 100);
       return () => clearInterval(timer);
     }
-  }, [settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, roundStatus, timeLeft, settings?.question_started_at, currentQuestion]);
+  }, [settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, displayStatus, timeLeft, settings?.question_started_at, currentQuestion]);
 
   // Éléments Audio Communs
   const AudioElements = (
@@ -405,8 +464,8 @@ export default function Display() {
     </>
   );
 
-  // 1. ÉCRAN D'ATTENTE (Quand la partie n'est pas lancée)
-  if (!settings?.is_playing) {
+  // 1. ÉCRAN D'ATTENTE (Quand la partie n'est pas lancée et qu'on n'est pas en bilan de phase)
+  if (!settings?.is_playing && displayStatus !== 'phase_summary' && displayStatus !== 'finale') {
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-8 text-center relative overflow-hidden bg-sunburst">
         {AudioElements}
@@ -505,7 +564,7 @@ export default function Display() {
     );
   }
 
-  if (roundStatus === 'phase_summary' && currentQuestion && !settings?.tie_breaker_mode) {
+  if (displayStatus === 'phase_summary' && currentQuestion && !settings?.tie_breaker_mode) {
     return (
       <div className="flex min-h-screen w-full flex-col items-center justify-center bg-sunburst p-6 text-center">
         {AudioElements}
@@ -558,6 +617,19 @@ export default function Display() {
               <p className="font-paytone text-2xl uppercase text-yellow-300">{phaseWinner.name || `Équipe ${phaseWinner.id}`} prend la tête</p>
             </div>
           ) : null}
+
+          {!phaseTie && (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 1.5 }}
+              className="mt-8 rounded-full border border-white/20 bg-black/50 px-8 py-4"
+            >
+              <p className="font-paytone text-2xl uppercase tracking-widest text-white/50">
+                Prêts pour la Phase {currentQuestion.phase + 1} ?
+              </p>
+            </motion.div>
+          )}
         </motion.div>
       </div>
     );
@@ -587,23 +659,79 @@ export default function Display() {
         </video>
       )}
 
-      {displayStatus === 'intro' && !isTieBreaker && currentQuestion && (
-        <motion.div
-          initial={{ opacity: 0, y: 18, scale: 0.96 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -12 }}
-          className="pointer-events-none absolute left-1/2 top-1/2 z-20 w-[min(90%,52rem)] -translate-x-1/2 -translate-y-1/2 text-center"
-        >
-          <div className="rounded-[2rem] border-4 border-yellow-400 bg-black/80 px-6 py-8 shadow-[0_0_45px_rgba(234,179,8,0.38)] backdrop-blur-md md:px-12 md:py-10">
-            <p className="mb-2 text-sm font-bold uppercase tracking-[0.35em] text-yellow-300">Nouvelle séquence</p>
-            <h2 className="font-paytone text-5xl uppercase tracking-wider text-white md:text-8xl">Phase {currentQuestion.phase} !</h2>
-            <p className="mt-4 font-paytone text-2xl uppercase tracking-widest text-yellow-300 md:text-4xl">
-              {currentQuestion.phase === 1 ? 'Choisissez parmi 2 réponses' : currentQuestion.phase === 2 ? 'Choisissez parmi 4 réponses' : 'Réponse libre sur les téléphones'}
-            </p>
-            <p className="mt-5 text-xs font-bold uppercase tracking-[0.28em] text-white/65">Le top départ arrive dans un instant</p>
-          </div>
-        </motion.div>
-      )}
+      <AnimatePresence>
+        {displayStatus === 'game_start' && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.5 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 1.5 }}
+            transition={{ type: 'spring', duration: 1.5, bounce: 0.4 }}
+            className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 backdrop-blur-md"
+          >
+            <motion.img
+              src={`${import.meta.env.BASE_URL}logo.png`}
+              alt="À qui qu'elle est cette Tête de visage ?"
+              className="w-full max-w-3xl drop-shadow-[0_0_50px_rgba(255,255,255,0.5)]"
+              animate={{ scale: [1, 1.05, 1] }}
+              transition={{ duration: 2, repeat: Infinity }}
+            />
+            <motion.p
+              animate={{ opacity: [0, 1, 0] }}
+              transition={{ duration: 1, repeat: Infinity }}
+              className="mt-12 text-center text-3xl font-paytone uppercase tracking-[0.3em] text-yellow-400 drop-shadow-[0_0_15px_rgba(234,179,8,0.8)] md:text-5xl"
+            >
+              Préparez-vous
+            </motion.p>
+          </motion.div>
+        )}
+
+        {displayStatus === 'phase_intro' && currentQuestion && (
+          <motion.div
+            initial={{ x: '-100vw', opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: '100vw', opacity: 0 }}
+            transition={{ type: 'spring', duration: 0.8, bounce: 0.2 }}
+            className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          >
+            <div className="w-full border-y-8 border-purple-500 bg-gradient-to-r from-blue-900/90 via-purple-900/90 to-blue-900/90 py-16 shadow-[0_0_100px_rgba(168,85,247,0.5)]">
+              <motion.div
+                initial={{ scale: 0.8, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ delay: 0.4 }}
+                className="mx-auto max-w-5xl px-4 text-center"
+              >
+                <h2 className="mb-4 font-paytone text-6xl uppercase tracking-widest text-white drop-shadow-[0_5px_5px_rgba(0,0,0,0.8)] md:text-9xl">
+                  Phase {currentQuestion.phase}
+                </h2>
+                <p className="font-paytone text-2xl uppercase tracking-widest text-yellow-300 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] md:text-5xl">
+                  {currentQuestion.phase === 1 ? 'Le Face-à-Face' : currentQuestion.phase === 2 ? 'Le Carré Magique' : 'Le Sprint Final'}
+                </p>
+                <div className="mx-auto mt-8 h-2 w-24 rounded-full bg-white/50" />
+                <p className="mt-8 text-lg font-bold uppercase tracking-[0.25em] text-white/90 md:text-2xl">
+                  {currentQuestion.phase === 1 ? '2 Propositions · 1 Bonne réponse' : currentQuestion.phase === 2 ? '4 Propositions · 1 Bonne réponse' : 'Saisie libre sur les téléphones'}
+                </p>
+              </motion.div>
+            </div>
+          </motion.div>
+        )}
+
+        {displayStatus === 'round_intro' && (
+          <motion.div
+            initial={{ scale: 2, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0, opacity: 0 }}
+            transition={{ type: 'spring', duration: 0.5, bounce: 0.5 }}
+            className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          >
+            <div className="rounded-[2rem] border-4 border-yellow-400 bg-black/80 px-8 py-10 text-center shadow-[0_0_60px_rgba(234,179,8,0.5)] md:px-16">
+              <p className="mb-3 text-sm font-bold uppercase tracking-[0.35em] text-yellow-300">À vous de jouer</p>
+              <h2 className="font-paytone text-5xl uppercase tracking-widest text-yellow-400 drop-shadow-[0_10px_20px_rgba(0,0,0,0.8)] md:text-8xl">
+                Manche {settings?.current_round || 1}
+              </h2>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {displayStatus === 'time_up' && (
         <motion.div
@@ -668,7 +796,7 @@ export default function Display() {
           )}
         </div>
 
-        {!isTieBreaker && roundStatus === 'active' && allActiveTeamsAnswered && (
+        {!isTieBreaker && displayStatus === 'active' && allActiveTeamsAnswered && (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}

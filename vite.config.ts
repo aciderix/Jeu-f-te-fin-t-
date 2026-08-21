@@ -12,7 +12,13 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['logo.png'],
+        includeAssets: ['logo.png', 'audio/*.mp3'],
+        workbox: {
+          // Les MP3 sont inclus au précache, y compris sur GitHub Pages.
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,mp3}'],
+          // Chaque fichier audio local peut aller jusqu'à 5 Mo dans le précache PWA.
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        },
         manifest: {
           name: 'À qui qu\'elle est cette Tête de visage ?',
           short_name: 'Quiz Tête',

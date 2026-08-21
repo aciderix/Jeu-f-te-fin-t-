@@ -9,6 +9,8 @@ export interface GameSettings {
   tie_breaker_question_id?: string; // ID de la question bonus active
   question_started_at?: string; // ISO date string
   winner_team_id?: string | null;
+  sequence_state?: 'idle' | 'game_start' | 'phase_intro' | 'round_intro' | 'active' | 'reveal' | 'phase_summary' | 'tie_breaker' | 'finale';
+  sequence_started_at?: string | null;
   bg_video_url?: string;
   bg_audio_url?: string;
   suspense_audio_url?: string;

@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { useGameState } from '../../hooks/useGameState';
 import { useQuestions } from '../../hooks/useQuestions';
 import { getDeterministicChoices } from '../../lib/utils';
 import { useTieBreakerSession } from '../../hooks/useTieBreakerSession';
+import { audioManager } from '../../lib/soundEffects';
+import { SEQUENCE_DURATIONS } from '../../lib/gameSequence';
 
 // Fonction pour calculer la distance de Levenshtein (tolérance fautes de frappe)
 const getLevenshteinDistance = (a: string, b: string): number => {
@@ -43,7 +45,14 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
   const [textInput, setTextInput] = useState('');
   const [startTime, setStartTime] = useState<number>(0);
   const [timeLeft, setTimeLeft] = useState<number>(0);
+  const [sequenceNow, setSequenceNow] = useState(() => Date.now());
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [hasResolvedLiveAnswer, setHasResolvedLiveAnswer] = useState(false);
+  const previousPhaseRef = useRef<number | null>(null);
+  const wasEliminatedRef = useRef(false);
+  const wasSavedRef = useRef(false);
+  const resultSoundRef = useRef<string | null>(null);
+  const victoryPlayedRef = useRef(false);
 
   // État Realtime du départage au buzzer
   const [buzzedTeamId, setBuzzedTeamId] = useState<string | null>(null);
@@ -63,12 +72,87 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
   const team = teams.find(t => t.id === teamId);
   const question = settings ? regularQuestions.find(q => q.order === settings.current_round) : null;
   const bonusQuestion = bonusQuestions.find(q => q.id === tieBreakerSession.question_id) || null;
+  const answerIsCorrect = Boolean(question && liveAnswer && (
+    getLevenshteinDistance(normalizeText(liveAnswer), normalizeText(question.correct_answer)) <= (question.correct_answer.length >= 6 ? 2 : 1) ||
+    liveAnswer.trim().toLowerCase() === question.correct_answer.trim().toLowerCase()
+  ));
+  const sequenceStartedAt = settings?.sequence_started_at
+    ? new Date(settings.sequence_started_at).getTime()
+    : null;
+  const sequenceElapsed = sequenceStartedAt ? Math.max(0, sequenceNow - sequenceStartedAt) : 0;
+  const sequenceState = settings?.sequence_state;
+  const isPreQuestionSequence = Boolean(
+    (sequenceState === 'game_start' && sequenceElapsed < SEQUENCE_DURATIONS.game_start + SEQUENCE_DURATIONS.phase_intro + SEQUENCE_DURATIONS.round_intro)
+    || (sequenceState === 'phase_intro' && sequenceElapsed < SEQUENCE_DURATIONS.phase_intro + SEQUENCE_DURATIONS.round_intro)
+    || (sequenceState === 'round_intro' && sequenceElapsed < SEQUENCE_DURATIONS.round_intro)
+  );
+  const questionHasStarted = Boolean(
+    settings?.question_started_at && sequenceNow >= new Date(settings.question_started_at).getTime()
+  );
 
   const teamColor = 
     teamId === 'A' ? 'bg-blue-600 border-blue-800 shadow-[0_6px_0_rgb(30,58,138)]' :
     teamId === 'B' ? 'bg-red-600 border-red-800 shadow-[0_6px_0_rgb(153,27,27)]' :
     teamId === 'C' ? 'bg-green-600 border-green-800 shadow-[0_6px_0_rgb(21,128,61)]' :
     'bg-purple-600 border-purple-800 shadow-[0_6px_0_rgb(107,33,168)]';
+
+  // Résultat individuel de la question régulière, joué une seule fois par réponse.
+  useEffect(() => {
+    if (!settings?.show_results || !question || !hasResolvedLiveAnswer) return;
+
+    const key = `${question.id}:${liveAnswer ?? 'no-answer'}`;
+    if (resultSoundRef.current === key) return;
+
+    resultSoundRef.current = key;
+    if (answerIsCorrect) audioManager.playCorrect();
+    else audioManager.playWrong();
+  }, [settings?.show_results, question?.id, liveAnswer, hasResolvedLiveAnswer, answerIsCorrect]);
+
+  // Qualification à la manche suivante, hors départage et hors finale.
+  useEffect(() => {
+    if (!settings || !team) return;
+
+    const previousPhase = previousPhaseRef.current;
+    if (
+      previousPhase !== null &&
+      settings.current_phase > previousPhase &&
+      settings.current_phase < 4 &&
+      !settings.tie_breaker_mode &&
+      !wasSavedRef.current &&
+      !team.is_eliminated
+    ) {
+      audioManager.playPhaseEnd('qualified');
+    }
+    previousPhaseRef.current = settings.current_phase;
+  }, [settings?.current_phase, settings?.tie_breaker_mode, team?.is_eliminated]);
+
+  // Élimination : le son est joué au changement d'état, pas à chaque rendu.
+  useEffect(() => {
+    if (!team) return;
+    if (team.is_eliminated && !wasEliminatedRef.current) {
+      audioManager.playPhaseEnd('eliminated');
+    }
+    wasEliminatedRef.current = team.is_eliminated;
+  }, [team?.is_eliminated]);
+
+  // Qualification lors d'un départage au buzzer.
+  useEffect(() => {
+    const isSaved = savedTeamIds.includes(teamId);
+    if (isSaved && !wasSavedRef.current) {
+      audioManager.playPhaseEnd('qualified');
+    }
+    wasSavedRef.current = isSaved;
+  }, [savedTeamIds, teamId]);
+
+  // Victoire de l'équipe à la fin de la partie.
+  useEffect(() => {
+    const isWinner = settings?.current_phase === 4 && settings.winner_team_id === teamId;
+    if (isWinner && !victoryPlayedRef.current) {
+      audioManager.playVictory();
+    }
+    if (!isWinner) victoryPlayedRef.current = false;
+    else victoryPlayedRef.current = true;
+  }, [settings?.current_phase, settings?.winner_team_id, teamId]);
 
   // 1. Initialiser le channel Realtime pour le buzzer
   useEffect(() => {
@@ -78,6 +162,8 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
       })
       .on('broadcast', { event: 'buzz_rejected' }, (payload) => {
         setBuzzedTeamId(null);
+        const failedTeamId = payload.payload?.failedTeamId;
+        if (failedTeamId !== teamId) audioManager.playBuzzStart();
         if (payload.payload?.failedTeamIds) {
           setFailedTeamIds(payload.payload.failedTeamIds);
         } else if (payload.payload?.failedTeamId) {
@@ -87,8 +173,10 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
       .on('broadcast', { event: 'start_tie_breaker' }, (payload) => {
         setBuzzedTeamId(null);
         setFailedTeamIds([]);
-        if (payload.payload?.teamsInTie) {
-          setTiedTeamIds(payload.payload.teamsInTie);
+        const teamsInTie = payload.payload?.teamsInTie;
+        if (teamsInTie) {
+          setTiedTeamIds(teamsInTie);
+          if (teamsInTie.includes(teamId)) audioManager.playBuzzStart();
         }
       })
       .on('broadcast', { event: 'next_bonus_question' }, () => {
@@ -116,6 +204,15 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
     }
   }, [settings?.tie_breaker_mode]);
 
+  // Horloge de rendu : elle ne décide pas du déroulé, mais actualise l'écran
+  // jusqu'au top départ daté dans Supabase.
+  useEffect(() => {
+    if (!settings?.is_playing || !settings.question_started_at) return;
+    setSequenceNow(Date.now());
+    const timer = window.setInterval(() => setSequenceNow(Date.now()), 100);
+    return () => window.clearInterval(timer);
+  }, [settings?.is_playing, settings?.question_started_at]);
+
   // 2. Préparer les choix et le timer à chaque changement de question/manche
   useEffect(() => {
     if (question && settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode) {
@@ -128,18 +225,18 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
       const st = settings.question_started_at ? new Date(settings.question_started_at).getTime() : 0;
       setStartTime(st);
       const elapsed = st ? (Date.now() - st) / 1000 : question.duration;
-      setTimeLeft(st ? Math.max(0, question.duration - elapsed) : 0);
+      setTimeLeft(st ? Math.max(0, Math.min(question.duration, question.duration - elapsed)) : 0);
     }
   }, [question, settings?.current_round, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode, settings?.question_started_at]);
 
   // Décompte du Timer
   useEffect(() => {
-    if (settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode && timeLeft > 0) {
+    if (settings?.is_playing && !settings.show_results && !settings.tie_breaker_mode && settings.question_started_at && question) {
       const timer = setInterval(() => {
         if (settings?.question_started_at && question) {
            const start = new Date(settings.question_started_at).getTime();
            const elapsed = (Date.now() - start) / 1000;
-           setTimeLeft(Math.max(0, question.duration - elapsed));
+           setTimeLeft(Math.max(0, Math.min(question.duration, question.duration - elapsed)));
         } else {
            setTimeLeft(prev => Math.max(0, prev - 1));
         }
@@ -150,15 +247,20 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
 
   // 3. Vérifier si l'équipe a déjà répondu pour cette manche
   useEffect(() => {
-    if (!settings?.current_round) return;
+    if (!settings?.current_round) {
+      setHasResolvedLiveAnswer(false);
+      return;
+    }
 
     if (!settings.is_playing || !settings.question_started_at) {
       setLiveAnswer(null);
       setTextInput('');
       setIsSubmitting(false);
+      setHasResolvedLiveAnswer(false);
       return;
     }
 
+    setHasResolvedLiveAnswer(false);
     const checkExistingAnswer = async () => {
       const { data: ansData } = await supabase
         .from('live_answers')
@@ -172,6 +274,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
         setLiveAnswer(null);
         setTextInput('');
       }
+      setHasResolvedLiveAnswer(true);
     };
 
     checkExistingAnswer();
@@ -213,6 +316,23 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
         </div>
         
         <button onClick={onLeave} className="mt-12 text-white/50 hover:text-white underline font-sans">Changer d'équipe</button>
+      </div>
+    );
+  }
+
+  // ÉCRAN 2.5 : Attente du top départ (Pendant les transitions d'écran collectif)
+  if (settings.is_playing && !settings.show_results && !settings.tie_breaker_mode && (isPreQuestionSequence || !questionHasStarted)) {
+    return (
+      <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center">
+        <div className={`px-8 py-4 rounded-2xl ${teamColor} border-4 mb-12`}>
+          <h2 className="text-4xl text-white font-paytone drop-shadow-md">Équipe {team.name || team.id}</h2>
+        </div>
+        
+        <div className="bg-black/40 p-8 rounded-3xl border-2 border-white/10 w-full max-w-md">
+          <div className="animate-pulse text-6xl mb-6">⏳</div>
+          <p className="text-2xl text-yellow-400 font-paytone mb-2">Préparez-vous...</p>
+          <p className="text-sm text-white/70 font-sans uppercase tracking-widest">La manche va commencer</p>
+        </div>
       </div>
     );
   }
@@ -340,10 +460,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
 
   // ÉCRAN 4 : Résultats Révélés
   if (settings.show_results) {
-    const isCorrect = question && liveAnswer && (
-      getLevenshteinDistance(normalizeText(liveAnswer), normalizeText(question.correct_answer)) <= (question.correct_answer.length >= 6 ? 2 : 1) ||
-      liveAnswer.trim().toLowerCase() === question.correct_answer.trim().toLowerCase()
-    );
+    const isCorrect = answerIsCorrect;
     
     return (
       <div className="flex flex-col items-center justify-center w-full min-h-screen p-6 text-center">
@@ -394,6 +511,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
       
     if (!error) {
       setLiveAnswer(answer);
+      audioManager.playValidated();
     } else {
       alert("Erreur lors de l'envoi de la réponse.");
     }

@@ -1,51 +1,80 @@
 type MusicMode = 'ambient' | 'suspense' | 'none';
-type OscillatorKind = OscillatorType;
 
+type SoundName =
+  | 'ambient'
+  | 'suspense'
+  | 'new-round'
+  | 'start'
+  | 'buzzer'
+  | 'buzz-start'
+  | 'validated'
+  | 'correct'
+  | 'wrong'
+  | 'qualified'
+  | 'eliminated'
+  | 'tie'
+  | 'tick'
+  | 'timeup'
+  | 'victory';
+
+const SOUND_NAMES: SoundName[] = [
+  'ambient',
+  'suspense',
+  'new-round',
+  'start',
+  'buzzer',
+  'buzz-start',
+  'validated',
+  'correct',
+  'wrong',
+  'qualified',
+  'eliminated',
+  'tie',
+  'tick',
+  'timeup',
+  'victory',
+];
+
+/**
+ * Gestionnaire audio 100 % local.
+ *
+ * Tous les fichiers sont placés dans public/audio et sont résolus avec BASE_URL,
+ * ce qui rend la solution compatible avec le mode développement, GitHub Pages
+ * et l'installation PWA. Les paramètres audio éventuellement présents dans
+ * Supabase sont volontairement ignorés : aucune URL distante n'est lue.
+ */
 class AudioManager {
-  private context: AudioContext | null = null;
-  private masterBus: GainNode | null = null;
-  private musicBus: GainNode | null = null;
-  private fxBus: GainNode | null = null;
-  private ambientAudio: HTMLAudioElement | null = null;
-  private suspenseAudio: HTMLAudioElement | null = null;
-  private ambientSource: MediaElementAudioSourceNode | null = null;
-  private suspenseSource: MediaElementAudioSourceNode | null = null;
-  private activeOscillators = new Set<OscillatorNode>();
+  private audioFiles: Partial<Record<SoundName, HTMLAudioElement>> = {};
+  private preloaded = false;
   private unlocked = false;
   private enabled = false;
   private musicMode: MusicMode = 'none';
-  private configuredAmbientUrl = '';
-  private configuredSuspenseUrl = '';
 
-  private getContext() {
-    if (!this.context && typeof window !== 'undefined') {
-      const AudioContextConstructor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!AudioContextConstructor) return null;
+  private get audioBasePath() {
+    return `${import.meta.env.BASE_URL || '/'}audio/`;
+  }
 
-      this.context = new AudioContextConstructor();
-      this.masterBus = this.context.createGain();
-      this.musicBus = this.context.createGain();
-      this.fxBus = this.context.createGain();
-      this.musicBus.connect(this.masterBus);
-      this.fxBus.connect(this.masterBus);
-      this.masterBus.connect(this.context.destination);
-      this.masterBus.gain.value = 0;
-      this.musicBus.gain.value = 0.42;
-      this.fxBus.gain.value = 0.8;
-    }
+  private preloadAudio() {
+    if (this.preloaded || typeof window === 'undefined') return;
 
-    return this.context;
+    SOUND_NAMES.forEach((name) => {
+      const audio = new Audio(`${this.audioBasePath}${name}.mp3`);
+      audio.preload = 'auto';
+      audio.loop = name === 'ambient' || name === 'suspense';
+      audio.volume = name === 'ambient' || name === 'suspense' ? 0.42 : 0.8;
+      this.audioFiles[name] = audio;
+    });
+
+    this.preloaded = true;
   }
 
   private canPlay() {
-    return this.unlocked && this.enabled && this.getContext() !== null;
+    return this.unlocked && this.enabled;
   }
 
   async unlock() {
+    this.preloadAudio();
     this.unlocked = true;
-    const context = this.getContext();
-    if (context?.state === 'suspended') await context.resume().catch(() => {});
-    this.setMasterGain(1);
     this.playSelectedMusic();
   }
 
@@ -56,7 +85,6 @@ class AudioManager {
   toggleEnabled() {
     if (this.enabled) {
       this.enabled = false;
-      this.setMasterGain(0);
       this.stopAllAudio();
       return false;
     }
@@ -71,174 +99,110 @@ class AudioManager {
     this.toggleEnabled();
   }
 
-  configureMusic(ambientUrl?: string, suspenseUrl?: string) {
-    if (ambientUrl !== this.configuredAmbientUrl) {
-      this.configuredAmbientUrl = ambientUrl || '';
-      this.ambientAudio = this.createMusicElement(this.configuredAmbientUrl, this.ambientAudio, this.ambientSource, source => {
-        this.ambientSource = source;
-      });
-    }
-    if (suspenseUrl !== this.configuredSuspenseUrl) {
-      this.configuredSuspenseUrl = suspenseUrl || '';
-      this.suspenseAudio = this.createMusicElement(this.configuredSuspenseUrl, this.suspenseAudio, this.suspenseSource, source => {
-        this.suspenseSource = source;
-      });
-    }
+  /**
+   * Les arguments sont conservés pour ne pas modifier les appelants existants.
+   * Les URLs fournies par Supabase ne sont pas utilisées : les musiques sont
+   * toujours public/audio/ambient.mp3 et public/audio/suspense.mp3.
+   */
+  configureMusic(_ambientUrl?: string, _suspenseUrl?: string) {
+    this.preloadAudio();
     this.playSelectedMusic();
   }
 
   setMusicMode(mode: MusicMode) {
     this.musicMode = mode;
-    this.pauseMusic(this.ambientAudio);
-    this.pauseMusic(this.suspenseAudio);
+    this.pauseMusic(this.audioFiles.ambient);
+    this.pauseMusic(this.audioFiles.suspense);
     this.playSelectedMusic();
   }
 
   playNewRound() {
-    this.playSequence([
-      { frequency: 392, duration: 0.12, delay: 0 },
-      { frequency: 523.25, duration: 0.22, delay: 0.1 }
-    ], 'sine', 0.14);
+    this.playFile('new-round');
   }
 
   playStart() {
-    this.playTone(880, 0.15, 'square', 0.16, 0, 1320);
+    this.playFile('start');
   }
 
-  playCountdownTick(urgent: boolean) {
-    this.playTone(urgent ? 740 : 520, urgent ? 0.08 : 0.06, 'sine', urgent ? 0.1 : 0.055);
+  playCountdownTick(_urgent: boolean) {
+    this.playFile('tick');
+  }
+
+  stopCountdownTick() {
+    this.pauseMusic(this.audioFiles.tick);
   }
 
   playTimeUp() {
-    this.playTone(110, 0.42, 'sawtooth', 0.2, 0, 70);
+    this.playFile('timeup');
   }
 
   playRevealCorrect() {
-    this.playSequence([
-      { frequency: 523.25, duration: 0.22, delay: 0 },
-      { frequency: 659.25, duration: 0.22, delay: 0.08 },
-      { frequency: 783.99, duration: 0.35, delay: 0.16 }
-    ], 'triangle', 0.16);
+    this.playFile('correct');
   }
 
   playPhaseEnd(result: 'qualified' | 'tie' | 'eliminated') {
-    if (result === 'tie') {
-      this.playTone(180, 0.35, 'sawtooth', 0.15, 0, 120);
-      return;
-    }
-    this.playSequence(result === 'eliminated'
-      ? [{ frequency: 220, duration: 0.3, delay: 0 }]
-      : [{ frequency: 392, duration: 0.16, delay: 0 }, { frequency: 523.25, duration: 0.28, delay: 0.12 }], 'triangle', 0.13);
+    this.playFile(result);
   }
 
   playVictory() {
-    this.playSequence([
-      { frequency: 523.25, duration: 0.25, delay: 0 },
-      { frequency: 659.25, duration: 0.25, delay: 0.18 },
-      { frequency: 783.99, duration: 0.55, delay: 0.36 }
-    ], 'triangle', 0.18);
+    this.playFile('victory');
     window.setTimeout(() => this.setMusicMode('ambient'), 1800);
   }
 
   playBuzzer() {
-    this.playTone(440, 0.35, 'sawtooth', 0.22, 0, 220);
+    this.playFile('buzzer');
+  }
+
+  playBuzzStart() {
+    this.playFile('buzz-start');
+  }
+
+  playValidated() {
+    this.playFile('validated');
   }
 
   playCorrect() {
-    this.playRevealCorrect();
+    this.playFile('correct');
   }
 
   playWrong() {
-    this.playTone(160, 0.4, 'sawtooth', 0.2, 0, 110);
+    this.playFile('wrong');
   }
 
-  private createMusicElement(
-    url: string,
-    previous: HTMLAudioElement | null,
-    previousSource: MediaElementAudioSourceNode | null,
-    onSource: (source: MediaElementAudioSourceNode | null) => void
-  ) {
-    this.pauseMusic(previous);
-    previousSource?.disconnect();
-    onSource(null);
-    if (!url || typeof window === 'undefined') return null;
+  private playFile(name: SoundName) {
+    if (!this.canPlay()) return;
 
-    const playableUrl = this.normalizeAudioUrl(url);
+    const audio = this.audioFiles[name];
+    if (!audio) return;
 
-    const audio = new Audio(playableUrl);
-    audio.loop = true;
-    audio.preload = 'auto';
-    audio.crossOrigin = 'anonymous';
-    const context = this.getContext();
-    if (context && this.musicBus) {
-      const source = context.createMediaElementSource(audio);
-      source.connect(this.musicBus);
-      onSource(source);
-    }
-    return audio;
-  }
-
-  private normalizeAudioUrl(url: string) {
-    const githubRawMatch = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/raw\/(?:refs\/heads\/)?([^/]+)\/(.+)$/);
-    if (!githubRawMatch) return url;
-
-    const [, owner, repository, branch, filePath] = githubRawMatch;
-    return `https://raw.githubusercontent.com/${owner}/${repository}/${branch}/${filePath}`;
+    audio.currentTime = 0;
+    audio.play().catch(() => {
+      // Le bouton son est nécessaire pour satisfaire la politique d'autoplay.
+    });
   }
 
   private playSelectedMusic() {
     if (!this.canPlay()) return;
-    const selected = this.musicMode === 'ambient' ? this.ambientAudio : this.musicMode === 'suspense' ? this.suspenseAudio : null;
-    if (selected) selected.play().catch(() => {});
+
+    const selected = this.musicMode === 'ambient'
+      ? this.audioFiles.ambient
+      : this.musicMode === 'suspense'
+        ? this.audioFiles.suspense
+        : null;
+
+    selected?.play().catch(() => {
+      // Le bouton son est nécessaire pour satisfaire la politique d'autoplay.
+    });
   }
 
-  private pauseMusic(audio: HTMLAudioElement | null) {
+  private pauseMusic(audio?: HTMLAudioElement) {
     if (!audio) return;
     audio.pause();
     audio.currentTime = 0;
   }
 
-  private setMasterGain(value: number) {
-    const context = this.getContext();
-    if (!context || !this.masterBus) return;
-    this.masterBus.gain.cancelScheduledValues(context.currentTime);
-    this.masterBus.gain.setValueAtTime(value, context.currentTime);
-  }
-
-  private playSequence(notes: Array<{ frequency: number; duration: number; delay: number }>, kind: OscillatorKind, volume: number) {
-    if (!this.canPlay()) return;
-    notes.forEach(note => this.playTone(note.frequency, note.duration, kind, volume, note.delay));
-  }
-
-  private playTone(frequency: number, duration: number, kind: OscillatorKind, volume: number, delay = 0, endFrequency?: number) {
-    if (!this.canPlay()) return;
-    const context = this.getContext();
-    if (!context || !this.fxBus) return;
-
-    const start = context.currentTime + delay;
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.type = kind;
-    oscillator.frequency.setValueAtTime(frequency, start);
-    if (endFrequency) oscillator.frequency.exponentialRampToValueAtTime(endFrequency, start + duration);
-    gain.gain.setValueAtTime(0.001, start);
-    gain.gain.linearRampToValueAtTime(volume, start + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
-    oscillator.connect(gain);
-    gain.connect(this.fxBus);
-    this.activeOscillators.add(oscillator);
-    oscillator.onended = () => this.activeOscillators.delete(oscillator);
-    oscillator.start(start);
-    oscillator.stop(start + duration);
-  }
-
   private stopAllAudio() {
-    this.pauseMusic(this.ambientAudio);
-    this.pauseMusic(this.suspenseAudio);
-    this.activeOscillators.forEach(oscillator => {
-      try { oscillator.stop(); } catch { /* Already stopped. */ }
-    });
-    this.activeOscillators.clear();
+    SOUND_NAMES.forEach((name) => this.pauseMusic(this.audioFiles[name]));
   }
 }
 

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
 import TeamDashboard from '../components/team/TeamDashboard';
 import { useGameState } from '../hooks/useGameState';
+import { audioManager } from '../lib/soundEffects';
 
 export default function Team() {
   const [selectedTeam, setSelectedTeam] = useState<string | null>(null);
@@ -15,6 +16,8 @@ export default function Team() {
   }, []);
 
   const handleSelectTeam = (id: string) => {
+    // Cette action résulte d'un clic : le navigateur autorise donc l'audio.
+    audioManager.setEnabled(true);
     setSelectedTeam(id);
     localStorage.setItem('selectedTeamId', id);
   };

@@ -11,6 +11,7 @@ import { soundFX } from '../lib/soundEffects';
 import { Team } from '../types';
 import { useTieBreakerSession } from '../hooks/useTieBreakerSession';
 import { isAnswerCorrect } from '../lib/utils';
+import { GameSequenceState, SEQUENCE_DURATIONS } from '../lib/gameSequence';
 
 export default function GameMaster() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -45,20 +46,29 @@ export default function GameMaster() {
     || bonusQuestions[bonusQuestionIndex]
     || null;
 
-  const scheduleQuestionStart = async (updates: Record<string, unknown>) => {
-    const round = updates.current_round;
-    await supabase.from('game_settings').update({
+  const scheduleQuestionStart = async (
+    updates: Record<string, unknown>,
+    initialSequence: Extract<GameSequenceState, 'game_start' | 'phase_intro' | 'round_intro'>,
+  ) => {
+    const now = Date.now();
+    const delay = initialSequence === 'game_start'
+      ? SEQUENCE_DURATIONS.game_start + SEQUENCE_DURATIONS.phase_intro + SEQUENCE_DURATIONS.round_intro
+      : initialSequence === 'phase_intro'
+        ? SEQUENCE_DURATIONS.phase_intro + SEQUENCE_DURATIONS.round_intro
+        : SEQUENCE_DURATIONS.round_intro;
+
+    // Un seul ordre, horodaté dans Supabase : tous les écrans observent exactement
+    // la même séquence et savent quand la question devient réellement active.
+    const { error } = await supabase.from('game_settings').update({
       ...updates,
-      question_started_at: null
+      is_playing: true,
+      show_results: false,
+      sequence_state: initialSequence,
+      sequence_started_at: new Date(now).toISOString(),
+      question_started_at: new Date(now + delay).toISOString(),
     }).eq('id', 1);
 
-    window.setTimeout(() => {
-      let request = supabase.from('game_settings')
-        .update({ question_started_at: new Date().toISOString() })
-        .eq('id', 1);
-      if (typeof round === 'number') request = request.eq('current_round', round);
-      void request.then(() => {});
-    }, 1500);
+    if (error) throw error;
   };
 
   useEffect(() => {
@@ -118,16 +128,27 @@ export default function GameMaster() {
   const handleStartGame = async () => {
     setIsProcessing(true);
     await clearAnswers();
+
+    // Après un bilan de phase, reprendre sur la première manche de la phase suivante.
+    const currentIndex = settings?.show_results
+      ? regularQuestions.findIndex(q => q.order === settings.current_round)
+      : -1;
+    const resumedQuestion = currentIndex >= 0 ? regularQuestions[currentIndex + 1] : null;
     const firstQuestion = regularQuestions.find(q => q.order === 1) || regularQuestions[0];
+    const nextQuestion = resumedQuestion || firstQuestion;
     
+    const initialSequence = !settings?.show_results
+      ? 'game_start'
+      : nextQuestion && nextQuestion.phase !== settings.current_phase
+        ? 'phase_intro'
+        : 'round_intro';
+
     await scheduleQuestionStart({
-      is_playing: true,
-      current_round: firstQuestion ? firstQuestion.order : 1,
-      current_phase: firstQuestion ? firstQuestion.phase : 1,
-      show_results: false,
+      current_round: nextQuestion ? nextQuestion.order : 1,
+      current_phase: nextQuestion ? nextQuestion.phase : 1,
       tie_breaker_mode: false,
       winner_team_id: null
-    });
+    }, initialSequence);
     setIsProcessing(false);
   };
 
@@ -156,7 +177,11 @@ export default function GameMaster() {
     }
 
     await supabase.from('game_settings')
-      .update({ show_results: true })
+      .update({
+        show_results: true,
+        sequence_state: 'reveal',
+        sequence_started_at: new Date().toISOString(),
+      })
       .eq('id', 1);
       
     setIsProcessing(false);
@@ -250,9 +275,8 @@ export default function GameMaster() {
     await scheduleQuestionStart({
       current_round: nextRoundIndex,
       current_phase: nextQuestion ? nextQuestion.phase : settings.current_phase,
-      show_results: false,
       tie_breaker_mode: false
-    });
+    }, 'round_intro');
     
     setIsProcessing(false);
   };
@@ -271,9 +295,14 @@ export default function GameMaster() {
     setBuzzedTeamId(null);
 
     await supabase.from('game_settings').update({
+      is_playing: true,
+      show_results: false,
       tie_breaker_mode: true,
       tie_breaker_teams: tiedIds,
-      tie_breaker_question_id: bonusQ?.id || null
+      tie_breaker_question_id: bonusQ?.id || null,
+      question_started_at: null,
+      sequence_state: 'tie_breaker',
+      sequence_started_at: new Date().toISOString()
     }).eq('id', 1);
 
     await supabase.from('tie_breaker_sessions').upsert({
@@ -317,9 +346,14 @@ export default function GameMaster() {
     setBuzzedTeamId(null);
 
     await supabase.from('game_settings').update({
+      is_playing: true,
+      show_results: false,
       tie_breaker_mode: true,
       tie_breaker_teams: tiedIds,
-      tie_breaker_question_id: bonusQ?.id || null
+      tie_breaker_question_id: bonusQ?.id || null,
+      question_started_at: null,
+      sequence_state: 'tie_breaker',
+      sequence_started_at: new Date().toISOString()
     }).eq('id', 1);
 
     await supabase.from('tie_breaker_sessions').upsert({
@@ -420,20 +454,27 @@ export default function GameMaster() {
       })();
 
       if (nextRound) {
+        // En fin de départage (hors finale), on repasse par le bilan de phase en pause.
         await clearAnswers();
-        const nextQ = regularQuestions.find(q => q.order === nextRound);
-        await scheduleQuestionStart({
-          current_round: nextRound,
-          current_phase: nextQ ? nextQ.phase : (settings ? settings.current_phase + 1 : 1),
-          show_results: false
-        });
+        await supabase.from('game_settings').update({
+          is_playing: false,
+          show_results: true,
+          tie_breaker_mode: false,
+          question_started_at: null,
+          sequence_state: 'phase_summary',
+          sequence_started_at: new Date().toISOString()
+        }).eq('id', 1);
       } else if (settings?.current_phase === 3) {
         // Fin de la finale
         const winnerId = newSaved[0] || teamId;
         await supabase.from('game_settings').update({
+          is_playing: false,
           current_phase: 4,
           show_results: true,
-          winner_team_id: winnerId
+          winner_team_id: winnerId,
+          question_started_at: null,
+          sequence_state: 'finale',
+          sequence_started_at: new Date().toISOString()
         }).eq('id', 1);
       }
     } else {
@@ -525,24 +566,29 @@ export default function GameMaster() {
     }
 
     if (phase < 3 && pendingNextRound) {
-      await clearAnswers();
-      const nextQ = regularQuestions.find(q => q.order === pendingNextRound);
-      await scheduleQuestionStart({
-        current_round: pendingNextRound,
-        current_phase: nextQ ? nextQ.phase : phase + 1,
-        show_results: false,
+      // Au lieu de lancer la manche suivante, on met en pause (is_playing: false)
+      // et on laisse les résultats visibles pour déclencher phase_summary sur l'écran collectif.
+      await supabase.from('game_settings').update({
+        is_playing: false,
+        show_results: true,
         tie_breaker_mode: false,
-        winner_team_id: null
-      });
+        winner_team_id: null,
+        question_started_at: null,
+        sequence_state: 'phase_summary',
+        sequence_started_at: new Date().toISOString()
+      }).eq('id', 1);
     } else if (phase === 3 && activeTeams.length > 0) {
       const winner = activeTeams[0];
       await supabase.from('teams').update({ is_eliminated: true }).neq('id', winner.id);
       await supabase.from('game_settings').update({
+        is_playing: false,
         current_phase: 4,
         show_results: true,
         tie_breaker_mode: false,
         winner_team_id: winner.id,
-        question_started_at: new Date().toISOString()
+        question_started_at: null,
+        sequence_state: 'finale',
+        sequence_started_at: new Date().toISOString()
       }).eq('id', 1);
     }
 
@@ -564,7 +610,9 @@ export default function GameMaster() {
       tie_breaker_teams: [],
       tie_breaker_question_id: null,
       question_started_at: null,
-      winner_team_id: null
+      winner_team_id: null,
+      sequence_state: 'idle',
+      sequence_started_at: null
     }).eq('id', 1);
 
     await supabase.from('tie_breaker_sessions').update({
@@ -741,7 +789,9 @@ export default function GameMaster() {
                 className="w-full relative overflow-hidden bg-gradient-to-b from-green-400 to-green-700 border-green-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(20,83,45),0_10px_20px_rgba(0,0,0,0.5)] active:shadow-[inset_0px_2px_4px_rgba(255,255,255,0.2),0_2px_0_rgb(20,83,45),0_5px_10px_rgba(0,0,0,0.5)] hover:from-green-300 hover:to-green-600 text-white text-2xl font-paytone py-6 rounded-3xl border-2 border-b-4 uppercase tracking-wider transition-all active:translate-y-1 disabled:opacity-50"
               >
                 <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-white/20 to-transparent rounded-t-3xl pointer-events-none"></div>
-                <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">Démarrer la partie</span>
+                <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
+                  {settings?.show_results ? `Démarrer la Phase ${settings.current_phase + 1}` : 'Démarrer la partie'}
+                </span>
               </button>
             ) : (
               <div className="flex flex-col gap-4">
@@ -760,7 +810,7 @@ export default function GameMaster() {
                   className="w-full relative overflow-hidden bg-gradient-to-b from-blue-400 to-blue-700 border-blue-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(30,58,138),0_10px_20px_rgba(0,0,0,0.5)] active:shadow-[inset_0px_2px_4px_rgba(255,255,255,0.2),0_2px_0_rgb(30,58,138),0_5px_10px_rgba(0,0,0,0.5)] hover:from-blue-300 hover:to-blue-600 text-white text-xl font-paytone py-5 rounded-3xl border-2 border-b-4 uppercase tracking-wider transition-all active:translate-y-1 disabled:opacity-50"
                 >
                   <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-white/20 to-transparent rounded-t-3xl pointer-events-none"></div>
-                  <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{isCurrentPhaseEnding ? 'Clôturer la phase' : 'Manche Suivante ⏭'}</span>
+                  <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{isCurrentPhaseEnding ? 'Valider les éliminations' : 'Manche Suivante ⏭'}</span>
                 </button>
 
                 <div className="h-px bg-white/10 my-2"></div>
