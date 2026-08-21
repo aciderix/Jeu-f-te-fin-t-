@@ -37,7 +37,7 @@ export default function GameMaster() {
   const { settings, teams, error: gameStateError } = useGameState();
   const { tieBreakerSession } = useTieBreakerSession();
   const { questions } = useQuestions();
-  const { liveAnswers, clearAnswers } = useLiveAnswers();
+  const { liveAnswers, refreshAnswers, clearAnswers } = useLiveAnswers();
 
   // Questions régulières et questions bonus
   const regularQuestions = questions.filter(q => q.phase !== 0 && !q.is_bonus);
@@ -159,11 +159,14 @@ export default function GameMaster() {
     
     const currentQuestion = questions.find(q => q.order === settings.current_round);
     
+    const persistedAnswers = await refreshAnswers();
+    const answersForScoring = persistedAnswers ?? liveAnswers;
+
     if (currentQuestion) {
       for (const team of teams) {
         if (team.is_eliminated) continue;
         
-        const teamAnswer = liveAnswers.find(a => a.team_id === team.id);
+        const teamAnswer = answersForScoring.find(a => a.team_id === team.id);
         if (teamAnswer) {
           const isCorrect = isAnswerCorrect(teamAnswer.answer, currentQuestion.correct_answer);
           

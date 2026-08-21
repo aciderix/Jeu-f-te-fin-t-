@@ -252,7 +252,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
       return;
     }
 
-    if (!settings.is_playing || !settings.question_started_at) {
+    if (!settings.is_playing || (!settings.question_started_at && !settings.show_results)) {
       setLiveAnswer(null);
       setTextInput('');
       setIsSubmitting(false);
@@ -262,12 +262,15 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
 
     setHasResolvedLiveAnswer(false);
     const checkExistingAnswer = async () => {
-      const { data: ansData } = await supabase
+      const { data: ansData, error: readError } = await supabase
         .from('live_answers')
         .select('answer')
         .eq('team_id', teamId)
         .maybeSingle();
       
+      if (readError) {
+        console.error('Impossible de relire la réponse de l’équipe:', readError);
+      }
       if (ansData) {
         setLiveAnswer(ansData.answer);
       } else {
@@ -508,10 +511,20 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
         answer: answer,
         time_taken: timeTaken
       });
-      
+
     if (!error) {
-      setLiveAnswer(answer);
-      audioManager.playValidated();
+      const { data: persistedAnswer, error: verifyError } = await supabase
+        .from('live_answers')
+        .select('answer')
+        .eq('team_id', teamId)
+        .maybeSingle();
+      if (verifyError || !persistedAnswer || persistedAnswer.answer !== answer) {
+        console.error('La réponse a été acceptée localement mais non confirmée dans Supabase:', verifyError);
+        alert("La réponse n’a pas pu être confirmée par le serveur. Veuillez prévenir le maître du jeu.");
+      } else {
+        setLiveAnswer(answer);
+        audioManager.playValidated();
+      }
     } else {
       alert("Erreur lors de l'envoi de la réponse.");
     }

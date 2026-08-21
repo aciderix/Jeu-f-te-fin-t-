@@ -5,11 +5,17 @@ import { LiveAnswer } from '../types';
 export function useLiveAnswers() {
   const [liveAnswers, setLiveAnswers] = useState<LiveAnswer[]>([]);
 
-  const fetchAnswers = async () => {
-    const { data } = await supabase.from('live_answers').select('*');
-    if (data) {
-      setLiveAnswers(data as LiveAnswer[]);
+  const refreshAnswers = async (): Promise<LiveAnswer[] | null> => {
+    const { data, error } = await supabase
+      .from('live_answers')
+      .select('team_id, answer, time_taken');
+    if (error) {
+      console.error('Impossible de relire les réponses Supabase:', error);
+      return null;
     }
+    const answers = (data || []) as LiveAnswer[];
+    setLiveAnswers(answers);
+    return answers;
   };
 
   const clearAnswers = async () => {
@@ -19,7 +25,7 @@ export function useLiveAnswers() {
   };
 
   useEffect(() => {
-    fetchAnswers();
+    refreshAnswers();
 
     const hookId = Math.random().toString(36).substring(7);
 
@@ -49,5 +55,5 @@ export function useLiveAnswers() {
     };
   }, []);
 
-  return { liveAnswers, clearAnswers };
+  return { liveAnswers, refreshAnswers, clearAnswers };
 }
