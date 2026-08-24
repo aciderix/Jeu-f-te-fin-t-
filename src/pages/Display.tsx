@@ -11,7 +11,7 @@ import { useTieBreakerSession } from '../hooks/useTieBreakerSession';
 import { getDeterministicChoices, isAnswerCorrect } from '../lib/utils';
 import { GameSequenceState, SEQUENCE_DURATIONS } from '../lib/gameSequence';
 
-type RoundStatus = 'intro' | 'active' | 'time_up' | 'reveal' | 'phase_summary' | 'finale' | 'tie_breaker' | 'waiting_start';
+type RoundStatus = 'intro' | 'active' | 'time_up' | 'reveal' | 'reveal_exit' | 'phase_summary' | 'finale' | 'tie_breaker' | 'waiting_start';
 
 interface ScoreCountUpProps {
   start: number;
@@ -67,7 +67,6 @@ export default function Display() {
   
   const lastCountdownMarkRef = useRef<number | null>(null);
   const lastTimeUpRoundRef = useRef<number | null>(null);
-  const lastRevealQuestionRef = useRef<string | null>(null);
   const lastPhaseSummaryQuestionRef = useRef<string | null>(null);
   const finalePlayedRef = useRef(false);
   const lastSequenceAudioRef = useRef<string | null>(null);
@@ -150,6 +149,7 @@ export default function Display() {
       : settings?.tie_breaker_mode
         ? 'tie_breaker'
         : roundStatus);
+  const revealElapsedSeconds = displayStatus === 'reveal' ? sequenceElapsed / 1_000 : 0;
 
   useEffect(() => {
     if (!databaseSequence || !settings?.sequence_started_at) return;
@@ -209,6 +209,7 @@ export default function Display() {
     active: 'EN JEU',
     time_up: 'TEMPS ÉCOULÉ',
     reveal: 'RÉVÉLATION',
+    reveal_exit: 'RÉVÉLATION',
     phase_summary: 'FIN DE PHASE',
     finale: 'GRANDE FINALE',
     tie_breaker: 'DÉPARTAGE EN COURS',
@@ -286,7 +287,6 @@ export default function Display() {
     // Le son de nouvelle manche est désormais géré par les séquences de transition.
     lastCountdownMarkRef.current = null;
     lastTimeUpRoundRef.current = null;
-    lastRevealQuestionRef.current = null;
     lastPhaseSummaryQuestionRef.current = null;
   }, [currentQuestion?.id, settings?.is_playing, settings?.tie_breaker_mode]);
 
@@ -298,12 +298,13 @@ export default function Display() {
   }, [settings?.bg_audio_url, settings?.suspense_audio_url, settings?.is_playing, settings?.show_results, settings?.tie_breaker_mode]);
 
   useEffect(() => {
-        if (displayStatus === 'active' && timeLeft > 0) {
+    if (displayStatus === 'active' && timeLeft > 0) {
       const seconds = Math.ceil(timeLeft);
-      const shouldTick = seconds <= 5 || (seconds <= 10 && seconds % 2 === 0);
-      if (shouldTick && lastCountdownMarkRef.current !== seconds) {
-        lastCountdownMarkRef.current = seconds;
-        audioManager.playCountdownTick(seconds <= 5);
+      // La piste tick contient sa propre montée finale : on la déclenche une seule
+      // fois à 5 secondes et on la coupe net quand le chrono sort de l'état actif.
+      if (seconds <= 5 && lastCountdownMarkRef.current !== -1) {
+        lastCountdownMarkRef.current = -1;
+        audioManager.playCountdownTick(true);
       }
     } else {
       // Empêche un fichier tick.mp3 un peu long de continuer après le zéro.
@@ -317,11 +318,25 @@ export default function Display() {
   }, [displayStatus, timeLeft, settings?.current_round]);
 
   useEffect(() => {
-    if (displayStatus === 'reveal' && currentQuestion && lastRevealQuestionRef.current !== currentQuestion.id) {
-      lastRevealQuestionRef.current = currentQuestion.id;
-      if (correctTeamIds.length > 0) audioManager.playRevealCorrect();
-    }
-  }, [displayStatus, currentQuestion?.id, correctTeamIds.length]);
+    if (displayStatus !== 'reveal' || !currentQuestion) return;
+
+    // Motion prépare simultanément toutes les animations différées. Les sons sont
+    // donc calés ici, carte par carte, sur l'horodatage partagé de la révélation.
+    const startedAt = settings?.sequence_started_at
+      ? new Date(settings.sequence_started_at).getTime()
+      : Date.now();
+    const elapsed = Math.max(0, Date.now() - startedAt);
+    const orderedTeams = [...teams].sort((a, b) => a.id.localeCompare(b.id));
+    const timers = orderedTeams.flatMap((team, index) => [
+      window.setTimeout(() => audioManager.playScoreCardPop(), Math.max(0, 3_000 + index * 500 - elapsed)),
+      window.setTimeout(
+        () => correctTeamIds.includes(team.id) ? audioManager.playScorePoint() : audioManager.playScoreZero(),
+        Math.max(0, 6_000 + index * 500 - elapsed),
+      ),
+    ]);
+
+    return () => timers.forEach(window.clearTimeout);
+  }, [displayStatus, currentQuestion?.id, settings?.sequence_started_at]);
 
   useEffect(() => {
     if (displayStatus === 'phase_summary' && currentQuestion && lastPhaseSummaryQuestionRef.current !== currentQuestion.id) {
@@ -807,7 +822,9 @@ export default function Display() {
           </motion.div>
         )}
         
-        {/* En-tête : Scores des 4 équipes (Strictement identique) */}
+        {/* En départage, les scores restent utiles. En manche normale, ils sont
+            réservés au moment de révélation pour laisser la photo respirer. */}
+        {isTieBreaker && (
         <div className="grid grid-cols-4 gap-4 mb-6">
           {teams.map(team => {
             const teamStyles: Record<string, string> = {
@@ -876,6 +893,7 @@ export default function Display() {
             );
           })}
         </div>
+        )}
 
         {/* Notification temporaire si refus de réponse en Manche Bonus */}
         {isTieBreaker && rejectedNotice && (
@@ -890,7 +908,7 @@ export default function Display() {
         )}
 
         {/* Zone Centrale : Cadre photo emblématique du jeu (Strictement identique) */}
-        <div className="flex-1 flex flex-col items-center justify-center mb-6 relative">
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center mb-6 relative">
           <AnimatePresence mode="wait">
             <motion.div 
               key={activeDisplayQuestion?.id || (isTieBreaker ? 'tie-breaker' : 'none')}
@@ -898,12 +916,12 @@ export default function Display() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: -50 }}
               transition={{ duration: 0.5, type: 'spring' }}
-              className="relative"
+              className="relative flex h-full w-full max-w-[min(92vw,1536px)] items-center justify-center"
             >
               {/* Cadre doré iconique */}
-              <div className="bg-yellow-500 p-3 rounded-[3rem] shadow-[0_0_40px_rgba(234,179,8,0.4)] border-4 border-yellow-300">
-                <div className="border-4 border-dashed border-yellow-800/30 p-2 rounded-[2.5rem] bg-black">
-                  <div className="relative overflow-hidden rounded-[2rem] w-full max-w-4xl aspect-[4/3] md:aspect-video flex items-center justify-center bg-gray-900 border-4 border-white/10">
+              <div className="h-full w-full bg-yellow-500 p-3 rounded-[3rem] shadow-[0_0_40px_rgba(234,179,8,0.4)] border-4 border-yellow-300">
+                <div className="h-full border-4 border-dashed border-yellow-800/30 p-2 rounded-[2.5rem] bg-black">
+                  <div className="relative h-full min-h-0 overflow-hidden rounded-[2rem] w-full flex items-center justify-center bg-gray-900 border-4 border-white/10">
                     {activeDisplayQuestion?.photo_url && !imageLoadError ? (
                       <img 
                         src={activeDisplayQuestion.photo_url} 
@@ -925,7 +943,7 @@ export default function Display() {
                     )}
                     
                     {/* Overlay de Révélation (Phase 3 texte en fin de manche) */}
-                    {!isTieBreaker && displayStatus === 'reveal' && activeDisplayQuestion && (
+                    {!isTieBreaker && (displayStatus === 'reveal' || displayStatus === 'reveal_exit') && activeDisplayQuestion && (
                        <motion.div 
                          initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }}
                          className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center backdrop-blur-sm"
@@ -1007,7 +1025,7 @@ export default function Display() {
               <AnimatePresence>
                 {choices.map((choice) => {
                   const isCorrect = choice === currentQuestion?.correct_answer;
-                  const showReveal = displayStatus === 'reveal';
+                  const showReveal = displayStatus === 'reveal' || displayStatus === 'reveal_exit';
                   
                   let btnClasses = "bg-blue-900/80 border-blue-500 text-white shadow-[0_8px_0_rgb(30,58,138)]";
                   
@@ -1041,6 +1059,70 @@ export default function Display() {
         )}
         
       </div>
+
+      {!isTieBreaker && (displayStatus === 'reveal' || displayStatus === 'reveal_exit') && (
+        <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center px-6">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.72, y: 30 }}
+            animate={displayStatus === 'reveal'
+              ? { opacity: 1, scale: 1, y: 0 }
+              : { opacity: 0, scale: 0.62, y: 30 }}
+            transition={displayStatus === 'reveal'
+              ? { type: 'spring', stiffness: 340, damping: 19, delay: Math.max(0, 2.85 - revealElapsedSeconds) }
+              : { duration: 0.9, ease: 'easeIn' }}
+            className="w-full max-w-6xl rounded-[2.5rem] border-4 border-yellow-400 bg-black/78 p-5 shadow-[0_0_70px_rgba(0,0,0,0.7)] backdrop-blur-md md:p-8"
+          >
+            <p className="mb-5 text-center text-xs font-bold uppercase tracking-[0.35em] text-yellow-300 md:mb-7">
+              Résultats de la manche
+            </p>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-5">
+              {[...teams].sort((a, b) => a.id.localeCompare(b.id)).map((team, index) => {
+                const earnedPoint = correctTeamIds.includes(team.id);
+                const scoreBeforeReveal = Math.max(0, team.score - (earnedPoint ? 1 : 0));
+                const teamStyles: Record<string, string> = {
+                  A: 'from-blue-500 to-blue-700 border-blue-200',
+                  B: 'from-red-500 to-red-700 border-red-200',
+                  C: 'from-green-500 to-green-700 border-green-200',
+                  D: 'from-purple-500 to-purple-700 border-purple-200',
+                };
+
+                return (
+                  <motion.div
+                    key={team.id}
+                    initial={{ opacity: 0, scale: 0.62, y: 34 }}
+                    animate={displayStatus === 'reveal'
+                      ? { opacity: 1, scale: 1, y: 0 }
+                      : { opacity: 0, scale: 0.56, y: 34 }}
+                    transition={displayStatus === 'reveal'
+                      ? { type: 'spring', stiffness: 430, damping: 15, delay: Math.max(0, 3 + index * 0.5 - revealElapsedSeconds) }
+                      : { duration: 0.65, ease: 'easeIn', delay: (3 - index) * 0.1 }}
+                    className={`relative overflow-hidden rounded-3xl border-4 bg-gradient-to-b p-4 text-center shadow-[0_8px_0_rgba(0,0,0,0.35)] md:p-6 ${teamStyles[team.id] || 'from-gray-500 to-gray-700 border-gray-200'} ${earnedPoint ? '' : 'saturate-[0.55] brightness-90'}`}
+                  >
+                    <p className="truncate text-lg font-paytone uppercase tracking-wide text-white md:text-2xl">
+                      {team.name || `Équipe ${team.id}`}
+                    </p>
+                    <p className="mt-1 text-4xl font-paytone text-yellow-200 drop-shadow-md md:text-6xl">
+                      <ScoreCountUp start={scoreBeforeReveal} target={team.score} active={displayStatus === 'reveal' && earnedPoint} />
+                    </p>
+                    <motion.p
+                      initial={{ opacity: 0, x: -26, scale: 0.7 }}
+                      animate={displayStatus === 'reveal'
+                        ? { opacity: 1, x: 0, scale: 1 }
+                        : { opacity: 0, x: 20, scale: 0.7 }}
+                      transition={displayStatus === 'reveal'
+                        ? { type: 'spring', stiffness: 460, damping: 15, delay: Math.max(0, 6 + index * 0.5 - revealElapsedSeconds) }
+                        : { duration: 0.3, ease: 'easeIn' }}
+                      className={`mt-2 font-paytone text-3xl md:text-5xl ${earnedPoint ? 'text-green-200 drop-shadow-[0_0_14px_rgba(134,239,172,0.95)]' : 'text-white/65'}`}
+                    >
+                      {earnedPoint ? '+1' : '0'}
+                    </motion.p>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

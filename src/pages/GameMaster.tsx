@@ -190,10 +190,30 @@ export default function GameMaster() {
     setIsProcessing(false);
   };
 
-  // Passer à la manche suivante ou détecter la fin de phase
+  // Après le clic de régie, tous les écrans ont un court instant pour jouer
+  // la sortie des cartes de score avant que la prochaine séquence ne démarre.
   const handleNextRound = async () => {
     if (!settings) return;
     setIsProcessing(true);
+
+    const { error } = await supabase.from('game_settings').update({
+      sequence_state: 'reveal_exit',
+      sequence_started_at: new Date().toISOString(),
+    }).eq('id', 1);
+
+    if (error) {
+      setIsProcessing(false);
+      throw error;
+    }
+
+    window.setTimeout(() => {
+      void advanceToNextRound();
+    }, 1_100);
+  };
+
+  // Passer à la manche suivante ou détecter la fin de phase
+  const advanceToNextRound = async () => {
+    if (!settings) return;
 
     const currentQuestion = regularQuestions.find(q => q.order === settings.current_round);
     const currentIndex = regularQuestions.findIndex(q => q.order === settings.current_round);

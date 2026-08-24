@@ -8,6 +8,9 @@ type SoundName =
   | 'buzzer'
   | 'buzz-start'
   | 'validated'
+  | 'score-card-pop'
+  | 'score-point'
+  | 'score-zero'
   | 'correct'
   | 'wrong'
   | 'qualified'
@@ -25,6 +28,9 @@ const SOUND_NAMES: SoundName[] = [
   'buzzer',
   'buzz-start',
   'validated',
+  'score-card-pop',
+  'score-point',
+  'score-zero',
   'correct',
   'wrong',
   'qualified',
@@ -161,6 +167,18 @@ class AudioManager {
     this.playFile('validated');
   }
 
+  playScoreCardPop() {
+    this.playFile('score-card-pop');
+  }
+
+  playScorePoint() {
+    this.playFile('score-point');
+  }
+
+  playScoreZero() {
+    this.playFile('score-zero');
+  }
+
   playCorrect() {
     this.playFile('correct');
   }
@@ -174,6 +192,19 @@ class AudioManager {
 
     const audio = this.audioFiles[name];
     if (!audio) return;
+
+    // Les révélations de score enchaînent plusieurs sons à quelques dizaines de
+    // millisecondes d'intervalle. Un clone évite qu'un nouveau son coupe le précédent.
+    // Le tick est volontairement un son unique : le relancer remplace le précédent
+    // et stopCountdownTick() doit pouvoir le couper net à la fin du chrono.
+    if (!audio.paused && !audio.loop && name !== 'tick') {
+      const layeredAudio = audio.cloneNode(true) as HTMLAudioElement;
+      layeredAudio.volume = audio.volume;
+      void layeredAudio.play().catch(() => {
+        // Même règle d'autoplay que le lecteur principal.
+      });
+      return;
+    }
 
     audio.currentTime = 0;
     audio.play().catch(() => {
