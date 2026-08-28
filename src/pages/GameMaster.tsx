@@ -866,9 +866,23 @@ export default function GameMaster() {
                 )}
                 <div className="absolute top-2 left-2 bg-black/80 px-2 py-1 rounded text-xs text-white">Survolez pour voir net</div>
               </div>
-              <div className="bg-green-900/40 border border-green-500/50 p-4 rounded-xl">
-                <span className="block text-green-300 text-sm font-bold uppercase mb-1">Bonne Réponse Attendue :</span>
-                <span className="text-2xl text-white font-bold">{currentQuestion.correct_answer}</span>
+              <div className="bg-green-900/40 border border-green-500/50 p-4 rounded-xl flex flex-col gap-2">
+                <div>
+                  <span className="block text-green-300 text-xs font-bold uppercase tracking-wider">Nom attendu (bonne réponse) :</span>
+                  <span className="text-2xl text-white font-bold">{currentQuestion.correct_answer}</span>
+                </div>
+                {currentQuestion.unit_name && (
+                  <div className="pt-2 border-t border-green-500/30">
+                    <span className="block text-yellow-300 text-xs font-bold uppercase tracking-wider">Unité de vie réelle :</span>
+                    <span className="text-lg text-yellow-200 font-semibold">{currentQuestion.unit_name}</span>
+                  </div>
+                )}
+                {currentQuestion.wrong_answers && currentQuestion.wrong_answers.length > 0 && (
+                  <div className="pt-2 border-t border-green-500/30">
+                    <span className="block text-white/60 text-xs font-bold uppercase tracking-wider">Unités leurres (indices) :</span>
+                    <span className="text-sm text-white/80">{currentQuestion.wrong_answers.join(' • ')}</span>
+                  </div>
+                )}
               </div>
             </div>
           )}

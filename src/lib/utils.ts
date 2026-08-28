@@ -16,7 +16,11 @@ export function mulberry32(a: number) {
 }
 
 export function getDeterministicChoices(question: any): string[] {
-  const seed = hashString(question.id);
+  if (!question || question.phase === 0 || question.phase === 3 || question.is_bonus) {
+    return [];
+  }
+
+  const seed = hashString(question.id || 'seed');
   const rng = mulberry32(seed);
   
   const required = question.phase === 1 ? 2 : 4;
@@ -28,7 +32,8 @@ export function getDeterministicChoices(question: any): string[] {
     [allWrongs[i], allWrongs[j]] = [allWrongs[j], allWrongs[i]];
   }
   
-  const selected = [question.correct_answer, ...allWrongs.slice(0, required - 1)];
+  const realUnit = question.unit_name?.trim() || question.correct_answer;
+  const selected = [realUnit, ...allWrongs.slice(0, Math.max(0, required - 1))].filter(Boolean);
   
   // Shuffle selected deterministically
   for (let i = selected.length - 1; i > 0; i--) {

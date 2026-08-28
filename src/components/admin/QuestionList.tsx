@@ -106,14 +106,19 @@ export default function QuestionList({ questions, onDelete, loading }: Props) {
                   
                   <div className="bg-black/30 rounded p-3 mb-2 border border-green-500/30">
                     <span className="text-green-400 font-bold block text-sm uppercase mb-1">
-                      {isBonus ? "Bonne réponse (visible uniquement par le MJ)" : "Bonne réponse"}
+                      {isBonus ? "Nom de la personne (visible uniquement par le MJ)" : "Nom de la personne"}
                     </span>
                     <p className="text-white text-lg font-bold">{q.correct_answer}</p>
+                    {q.unit_name && (
+                      <p className="text-yellow-300 text-sm font-semibold mt-1">
+                        📍 Unité réelle : {q.unit_name}
+                      </p>
+                    )}
                   </div>
 
                   {!isBonus && q.wrong_answers && q.wrong_answers.length > 0 && (
                     <div className="bg-black/30 rounded p-3 border border-red-500/30">
-                      <span className="text-red-400 font-bold block text-sm uppercase mb-1">Propositions factices</span>
+                      <span className="text-red-400 font-bold block text-sm uppercase mb-1">Unités de vie leurres (indices)</span>
                       <p className="text-white/80 text-sm">{q.wrong_answers.join(' • ')}</p>
                     </div>
                   )}

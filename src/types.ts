@@ -42,8 +42,9 @@ export interface Question {
   order: number;
   photo_url: string;
   duration: number;
-  correct_answer: string;
-  wrong_answers: string[];
+  correct_answer: string; // Nom de la personne (ex: "Jean Dupont")
+  unit_name?: string; // Unité de vie ou service d'appartenance (ex: "Unité Les Tournesols")
+  wrong_answers: string[]; // Unités de vie ou services leurres (pour composer les indices)
   is_bonus?: boolean;
 }
 

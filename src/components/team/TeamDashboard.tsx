@@ -544,74 +544,83 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
     );
   }
 
-  // Formulaire de réponse (Phase 1, 2, ou 3)
+  // Formulaire de réponse (Phase 1, 2, ou 3 : Saisie du nom + indices d'unités de vie)
   return (
     <div className="flex flex-col items-center justify-center w-full min-h-screen p-4 text-center">
       
       {/* Header compact */}
-      <div className="flex justify-between items-center w-full max-w-md mb-6 bg-black/40 rounded-xl p-3 border border-white/20">
+      <div className="flex justify-between items-center w-full max-w-md mb-4 bg-black/40 rounded-xl p-3 border border-white/20">
         <span className={`px-4 py-1 rounded text-white font-bold ${teamColor.split(' ')[0]}`}>Équipe {teamId}</span>
-        <span className="text-yellow-400 font-paytone">Phase {settings.current_phase}</span>
+        <span className="text-yellow-400 font-paytone">
+          {settings.current_phase === 3 ? 'Phase 3 (Sans indice)' : `Phase ${settings.current_phase}`}
+        </span>
       </div>
 
       {/* Miniature Photo (si dispo) */}
       {question?.photo_url && (
-        <div className="mb-6 w-full max-w-sm rounded-2xl overflow-hidden border-4 border-white/30 shadow-xl bg-black/50 relative" style={{ maxHeight: '30vh' }}>
-          <img src={question.photo_url} alt="Indice" className="w-full h-full object-contain" />
+        <div className="mb-4 w-full max-w-sm rounded-2xl overflow-hidden border-4 border-white/30 shadow-xl bg-black/50 relative" style={{ maxHeight: '24vh' }}>
+          <img src={question.photo_url} alt="Devinette" className="w-full h-full object-contain" />
         </div>
       )}
 
-      {/* Phase 1 et 2 : Boutons */}
-      {(settings.current_phase === 1 || settings.current_phase === 2) && (
-        <div className={`grid gap-4 w-full max-w-md ${settings.current_phase === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
-          {choices.map((choice, idx) => {
-            const btnColors = [
-              'bg-gradient-to-b from-pink-400 to-pink-700 border-pink-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(157,23,77),0_10px_20px_rgba(0,0,0,0.5)] active:shadow-[inset_0px_2px_4px_rgba(255,255,255,0.2),0_2px_0_rgb(157,23,77),0_5px_10px_rgba(0,0,0,0.5)] hover:from-pink-300 hover:to-pink-600',
-              'bg-gradient-to-b from-blue-400 to-blue-700 border-blue-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(30,58,138),0_10px_20px_rgba(0,0,0,0.5)] active:shadow-[inset_0px_2px_4px_rgba(255,255,255,0.2),0_2px_0_rgb(30,58,138),0_5px_10px_rgba(0,0,0,0.5)] hover:from-blue-300 hover:to-blue-600',
-              'bg-gradient-to-b from-orange-400 to-orange-700 border-orange-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(154,52,18),0_10px_20px_rgba(0,0,0,0.5)] active:shadow-[inset_0px_2px_4px_rgba(255,255,255,0.2),0_2px_0_rgb(154,52,18),0_5px_10px_rgba(0,0,0,0.5)] hover:from-orange-300 hover:to-orange-600',
-              'bg-gradient-to-b from-teal-400 to-teal-700 border-teal-900 shadow-[inset_0px_2px_4px_rgba(255,255,255,0.4),0_6px_0_rgb(17,94,89),0_10px_20px_rgba(0,0,0,0.5)] active:shadow-[inset_0px_2px_4px_rgba(255,255,255,0.2),0_2px_0_rgb(17,94,89),0_5px_10px_rgba(0,0,0,0.5)] hover:from-teal-300 hover:to-teal-600'
-            ];
-            const colorClass = btnColors[idx % btnColors.length];
-            return (
-              <button 
+      {/* Indices : Unités de vie (Phases 1 et 2) ou Info Phase 3 */}
+      {(settings.current_phase === 1 || settings.current_phase === 2) && choices.length > 0 && (
+        <div className="w-full max-w-md mb-4 bg-black/50 p-4 rounded-2xl border-2 border-yellow-400/40 text-center shadow-lg backdrop-blur-sm">
+          <p className="text-xs font-bold uppercase tracking-widest text-yellow-300 mb-2 flex items-center justify-center gap-1.5">
+            <span>📍</span>
+            <span>Indices : {choices.length} Unités de vie possibles</span>
+          </p>
+          <div className={`grid gap-2 ${settings.current_phase === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+            {choices.map((unit, idx) => (
+              <div 
                 key={idx}
-                onClick={() => submitAnswer(choice)}
-                disabled={isSubmitting || timeLeft <= 0}
-                className={`w-full ${colorClass} text-white font-paytone text-xl md:text-2xl py-4 md:py-6 px-4 rounded-3xl border-2 border-b-4 transition-all active:translate-y-1 break-words disabled:opacity-50 relative overflow-hidden ${timeLeft <= 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className="bg-blue-950/80 border border-blue-400/60 text-white font-paytone text-base md:text-lg py-2 px-3 rounded-xl shadow-md break-words flex items-center justify-center"
               >
-                <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-white/20 to-transparent rounded-t-3xl pointer-events-none"></div>
-                <span className="relative z-10 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">{choice}</span>
-              </button>
-            )
-          })}
+                {unit}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* Phase 3 : Saisie libre */}
       {settings.current_phase === 3 && (
-        <form 
-          onSubmit={(e) => { e.preventDefault(); if (textInput.trim()) submitAnswer(textInput); }}
-          className="w-full max-w-md bg-black/40 p-6 rounded-3xl border-2 border-white/20 shadow-2xl"
-        >
-          <p className="text-white/80 font-sans mb-4 font-bold uppercase tracking-widest text-sm">Qui est-ce ?</p>
-          <input 
-            type="text" 
-            value={textInput}
-            onChange={(e) => setTextInput(e.target.value)}
-            disabled={timeLeft <= 0}
-            placeholder={timeLeft <= 0 ? "Temps écoulé !" : "Tapez le nom..."}
-            className={`w-full bg-white text-black font-sans font-bold text-2xl p-4 rounded-xl mb-4 text-center outline-none focus:ring-4 focus:ring-blue-500 ${timeLeft <= 0 ? 'opacity-50' : ''}`}
-            autoFocus
-          />
-          <button 
-            type="submit"
-            disabled={isSubmitting || !textInput.trim() || timeLeft <= 0}
-            className="w-full bg-green-500 hover:bg-green-400 border-green-700 shadow-[0_6px_0_rgb(21,128,61)] text-white text-2xl font-paytone uppercase py-4 rounded-xl border-4 transition-all active:translate-y-1 active:shadow-none disabled:opacity-50 disabled:active:translate-y-0 disabled:shadow-[0_6px_0_rgb(21,128,61)]"
-          >
-            {timeLeft <= 0 ? 'Temps écoulé' : 'Valider'}
-          </button>
-        </form>
+        <div className="w-full max-w-md mb-4 bg-black/40 p-3 rounded-2xl border border-white/20 text-center shadow-md">
+          <p className="text-xs font-bold uppercase tracking-widest text-white/70">
+            🔍 Phase 3 : Aucun indice d'unité (Identification directe)
+          </p>
+        </div>
       )}
+
+      {/* Formulaire de saisie du nom de la personne (Valable pour Phase 1, Phase 2, Phase 3) */}
+      <form 
+        onSubmit={(e) => { 
+          e.preventDefault(); 
+          if (textInput.trim() && !isSubmitting && timeLeft > 0) {
+            submitAnswer(textInput.trim()); 
+          }
+        }}
+        className="w-full max-w-md bg-black/50 p-5 rounded-3xl border-2 border-white/20 shadow-2xl backdrop-blur-md"
+      >
+        <label className="block text-white/90 font-sans mb-3 font-bold uppercase tracking-wider text-xs md:text-sm">
+          Qui est cette personne ?
+        </label>
+        <input 
+          type="text" 
+          value={textInput}
+          onChange={(e) => setTextInput(e.target.value)}
+          disabled={timeLeft <= 0 || isSubmitting}
+          placeholder={timeLeft <= 0 ? "Temps écoulé !" : "Tapez le prénom et nom..."}
+          className={`w-full bg-white text-black font-sans font-bold text-xl md:text-2xl p-4 rounded-xl mb-4 text-center outline-none focus:ring-4 focus:ring-yellow-400 transition-all ${timeLeft <= 0 ? 'opacity-50' : ''}`}
+          autoFocus
+        />
+        <button 
+          type="submit"
+          disabled={isSubmitting || !textInput.trim() || timeLeft <= 0}
+          className="w-full bg-green-500 hover:bg-green-400 border-green-700 shadow-[0_6px_0_rgb(21,128,61)] text-white text-xl md:text-2xl font-paytone uppercase py-3.5 md:py-4 rounded-xl border-4 transition-all active:translate-y-1 active:shadow-none disabled:opacity-50 disabled:active:translate-y-0 disabled:shadow-[0_6px_0_rgb(21,128,61)]"
+        >
+          {timeLeft <= 0 ? 'Temps écoulé' : isSubmitting ? 'Envoi en cours...' : 'Valider ma réponse'}
+        </button>
+      </form>
 
     </div>
   );

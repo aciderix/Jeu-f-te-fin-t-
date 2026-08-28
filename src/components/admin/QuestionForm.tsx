@@ -11,6 +11,7 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
   const [phase, setPhase] = useState(1);
   const [duration, setDuration] = useState(30);
   const [correctAnswer, setCorrectAnswer] = useState('');
+  const [unitName, setUnitName] = useState('');
   const [wrongAnswersStr, setWrongAnswersStr] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -19,7 +20,7 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const wrongAnswers = isBonus 
+    const wrongAnswers = isBonus || phase === 3
       ? [] 
       : wrongAnswersStr.split(',').map(s => s.trim()).filter(s => s.length > 0);
     
@@ -27,7 +28,8 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
       photo_url: photoUrl,
       phase,
       duration: isBonus ? 0 : duration,
-      correct_answer: correctAnswer,
+      correct_answer: correctAnswer.trim(),
+      unit_name: unitName.trim() || undefined,
       wrong_answers: wrongAnswers,
       order: currentCount + 1,
       is_bonus: isBonus,
@@ -36,6 +38,7 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
     setLoading(false);
     setPhotoUrl('');
     setCorrectAnswer('');
+    setUnitName('');
     setWrongAnswersStr('');
   };
 
@@ -57,14 +60,20 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
           onChange={e => setPhase(Number(e.target.value))} 
           className={`w-full ${isBonus ? 'bg-yellow-950/80 border-yellow-500 text-yellow-300' : 'bg-black/80 border-white/30 text-white'} border rounded-lg p-3 outline-none focus:border-blue-500 transition-colors shadow-inner`}
         >
-          <option value={1}>Phase 1 (2 choix)</option>
-          <option value={2}>Phase 2 (4 choix)</option>
-          <option value={3}>Phase 3 (Saisie textuelle)</option>
+          <option value={1}>Phase 1 (2 indices : 2 unités de vie possibles)</option>
+          <option value={2}>Phase 2 (4 indices : 4 unités de vie possibles)</option>
+          <option value={3}>Phase 3 (Sans indice : identification directe)</option>
           <option value={0}>⚡ Manche Bonus / Mort Subite (Buzzer & validation orale)</option>
         </select>
-        {isBonus && (
+        {isBonus ? (
           <p className="text-xs text-yellow-300/80 mt-1">
             💡 Les manches bonus sont réservées aux départages en cas d'égalité. La photo sera affichée sur le grand écran, et la bonne réponse sera visible <strong>uniquement par le Maître du Jeu</strong> pour valider la réponse orale de l'équipe qui buzze.
+          </p>
+        ) : (
+          <p className="text-xs text-white/60 mt-1">
+            {phase === 1 && "💡 Les chefs d'équipe écriront le nom de la personne, aidés par 2 unités de vie affichées comme indices (1 vraie + 1 fausse)."}
+            {phase === 2 && "💡 Les chefs d'équipe écriront le nom de la personne, aidés par 4 unités de vie affichées comme indices (1 vraie + 3 fausses)."}
+            {phase === 3 && "💡 Les chefs d'équipe écriront le nom de la personne directement sans aucun indice d'unité."}
           </p>
         )}
       </div>
@@ -82,15 +91,55 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
       )}
 
       <div>
-        <label className="block text-white/80 text-sm mb-1 font-bold text-green-300">Bonne réponse attendue *</label>
-        <input required type="text" value={correctAnswer} onChange={e => setCorrectAnswer(e.target.value)} className="w-full bg-white/10 border border-white/30 rounded-lg p-3 text-white outline-none focus:border-green-500 transition-colors shadow-inner" placeholder={isBonus ? "Ex: Brad Pitt (visible uniquement par le MJ)" : "Ex: Jean Dujardin"} />
+        <label className="block text-white/80 text-sm mb-1 font-bold text-green-300">
+          {isBonus ? "Nom de la personne (visible uniquement par le MJ) *" : "Nom de la personne (réponse écrite attendue) *"}
+        </label>
+        <input 
+          required 
+          type="text" 
+          value={correctAnswer} 
+          onChange={e => setCorrectAnswer(e.target.value)} 
+          className="w-full bg-white/10 border border-white/30 rounded-lg p-3 text-white outline-none focus:border-green-500 transition-colors shadow-inner" 
+          placeholder="Ex: Jean Dupont" 
+        />
       </div>
 
       {!isBonus && (
         <div>
-          <label className="block text-white/80 text-sm mb-1 font-bold text-red-300">Mauvaises réponses</label>
-          <p className="text-xs text-white/50 mb-2">Séparez les propositions par des virgules</p>
-          <input type="text" value={wrongAnswersStr} onChange={e => setWrongAnswersStr(e.target.value)} className="w-full bg-white/10 border border-white/30 rounded-lg p-3 text-white outline-none focus:border-red-500 transition-colors shadow-inner" placeholder="Ex: George Clooney, Brad Pitt" />
+          <label className="block text-white/80 text-sm mb-1 font-bold text-yellow-300">
+            Unité de vie réelle de la personne {phase === 3 ? '(optionnel, affiché lors de la révélation)' : '*'}
+          </label>
+          <input 
+            type="text" 
+            required={phase === 1 || phase === 2}
+            value={unitName} 
+            onChange={e => setUnitName(e.target.value)} 
+            className="w-full bg-white/10 border border-white/30 rounded-lg p-3 text-white outline-none focus:border-yellow-400 transition-colors shadow-inner" 
+            placeholder="Ex: Unité Les Tournesols (ou Service Cuisine, Administration...)" 
+          />
+        </div>
+      )}
+
+      {(phase === 1 || phase === 2) && (
+        <div>
+          <label className="block text-white/80 text-sm mb-1 font-bold text-red-300">
+            {phase === 1 
+              ? "1 Unité de vie leurre (fausse unité) *" 
+              : "3 Unités de vie leurres (fausses unités, séparées par des virgules) *"}
+          </label>
+          <p className="text-xs text-white/50 mb-2">
+            {phase === 1 
+              ? "Cette unité sera proposée aux côtés de la vraie pour faire 2 indices au total."
+              : "Ces 3 unités seront proposées aux côtés de la vraie pour faire 4 indices au total."}
+          </p>
+          <input 
+            type="text" 
+            required
+            value={wrongAnswersStr} 
+            onChange={e => setWrongAnswersStr(e.target.value)} 
+            className="w-full bg-white/10 border border-white/30 rounded-lg p-3 text-white outline-none focus:border-red-500 transition-colors shadow-inner" 
+            placeholder={phase === 1 ? "Ex: Unité Les Chênes" : "Ex: Unité Les Chênes, Unité Les Bleuets, Accueil"} 
+          />
         </div>
       )}
 

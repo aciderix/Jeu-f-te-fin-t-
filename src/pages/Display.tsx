@@ -935,17 +935,28 @@ export default function Display() {
                       </div>
                     )}
                     
-                    {/* Overlay de Révélation (Phase 3 texte en fin de manche) */}
+                    {/* Overlay de Révélation (Fin de manche régulière) */}
                     {!isTieBreaker && displayStatus === 'reveal' && activeDisplayQuestion && (
                        <motion.div 
                          initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }}
-                         className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center backdrop-blur-sm"
+                         className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center p-8 text-center backdrop-blur-md"
                        >
-                         <p className="mb-3 text-2xl font-paytone uppercase text-green-300 md:text-4xl">✓ BONNE RÉPONSE</p>
-                         <p className="mb-2 text-sm font-bold uppercase tracking-widest text-yellow-400">La réponse était</p>
-                         <p className="text-4xl font-bold text-white drop-shadow-[0_0_20px_rgba(255,255,255,0.5)] md:text-6xl">
+                         <p className="mb-2 text-2xl font-paytone uppercase text-green-300 md:text-3xl">✓ RÉVÉLATION</p>
+                         <p className="mb-2 text-xs md:text-sm font-bold uppercase tracking-widest text-yellow-400">La personne en photo était</p>
+                         <p className="text-4xl font-bold font-paytone text-white drop-shadow-[0_0_25px_rgba(255,255,255,0.6)] md:text-6xl mb-3">
                            {activeDisplayQuestion.correct_answer}
                          </p>
+                         {activeDisplayQuestion.unit_name && (
+                           <motion.div 
+                             initial={{ opacity: 0, y: 10 }}
+                             animate={{ opacity: 1, y: 0 }}
+                             transition={{ delay: 0.4 }}
+                             className="inline-flex items-center gap-2 bg-yellow-500/20 border border-yellow-400/60 px-5 py-2 rounded-full text-yellow-300 font-sans font-bold text-sm md:text-lg shadow-lg"
+                           >
+                             <span>📍</span>
+                             <span>Unité : {activeDisplayQuestion.unit_name}</span>
+                           </motion.div>
+                         )}
                        </motion.div>
                     )}
                   </div>
@@ -1006,47 +1017,59 @@ export default function Display() {
         ) : settings.current_phase === 3 ? (
           <div className="w-full max-w-4xl mx-auto bg-black/55 p-6 rounded-3xl border-2 border-blue-400/60 text-center shadow-xl backdrop-blur-md">
             <p className="text-2xl md:text-4xl font-paytone uppercase tracking-wider text-yellow-300">QUI EST-CE ?</p>
-            <p className="mt-1 text-sm md:text-base font-sans font-bold uppercase tracking-widest text-white/80">Répondez sur votre écran</p>
+            <p className="mt-1 text-sm md:text-base font-sans font-bold uppercase tracking-widest text-white/80">Phase 3 : Sans indice • Identification directe</p>
             <p className="mt-3 text-lg font-paytone text-white">
               {liveAnswers.length} / {teams.length} réponses enregistrées
             </p>
           </div>
         ) : (
-          /* MANCHES NORMALES : Propositions (Phases 1 et 2) */
+          /* MANCHES NORMALES : Indices Unités de vie (Phases 1 et 2) */
           (settings.current_phase === 1 || settings.current_phase === 2) && (
-            <div className={`grid gap-6 w-full max-w-5xl mx-auto ${settings.current_phase === 1 ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-4'}`}>
-              <AnimatePresence>
-                {choices.map((choice) => {
-                  const isCorrect = choice === currentQuestion?.correct_answer;
-                  const showReveal = displayStatus === 'reveal';
-                  
-                  let btnClasses = "bg-blue-900/80 border-blue-500 text-white shadow-[0_8px_0_rgb(30,58,138)]";
-                  
-                  if (showReveal) {
-                    if (isCorrect) {
-                      btnClasses = "bg-green-500 border-green-300 text-white shadow-[0_0_30px_rgba(34,197,94,0.8)] scale-110 z-10";
-                    } else {
-                      btnClasses = "bg-gray-800 border-gray-700 text-gray-500 opacity-50 scale-95";
-                    }
-                  }
+            <div className="w-full max-w-5xl mx-auto flex flex-col gap-4">
+              <div className="flex flex-col sm:flex-row items-center justify-between bg-black/50 px-6 py-3 rounded-2xl border border-yellow-400/30 backdrop-blur-sm gap-2">
+                <div className="flex items-center gap-2 text-yellow-300 font-paytone text-lg md:text-xl uppercase tracking-wider">
+                  <span>📍</span>
+                  <span>INDICES : {choices.length} UNITÉS DE VIE POSSIBLES</span>
+                </div>
+                <div className="text-white/80 font-sans font-bold text-sm md:text-base">
+                  {liveAnswers.length} / {teams.length} réponses envoyées
+                </div>
+              </div>
 
-                  return (
-                    <motion.div
-                      key={choice}
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className={`relative flex items-center justify-center p-6 rounded-2xl border-4 transition-all duration-500 text-center ${btnClasses} ${displayStatus === 'time_up' ? 'grayscale' : ''}`}
-                    >
-                      {showReveal && isCorrect && (
-                        <span className="absolute -top-4 rounded-full border-2 border-green-200 bg-green-500 px-4 py-1 text-xs font-paytone uppercase text-white shadow-lg">
-                          ✓ Bonne réponse
-                        </span>
-                      )}
-                      <span className="text-2xl md:text-3xl font-bold font-sans drop-shadow-md break-words">{choice}</span>
-                    </motion.div>
-                  );
-                })}
-              </AnimatePresence>
+              <div className={`grid gap-4 md:gap-6 w-full ${settings.current_phase === 1 ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-4'}`}>
+                <AnimatePresence>
+                  {choices.map((choice) => {
+                    const isRealUnit = choice === (currentQuestion?.unit_name || currentQuestion?.correct_answer);
+                    const showReveal = displayStatus === 'reveal';
+                    
+                    let cardClasses = "bg-blue-950/80 border-blue-400/70 text-white shadow-[0_8px_0_rgb(30,58,138)]";
+                    
+                    if (showReveal) {
+                      if (isRealUnit) {
+                        cardClasses = "bg-green-600 border-green-300 text-white shadow-[0_0_30px_rgba(34,197,94,0.8)] scale-105 z-10";
+                      } else {
+                        cardClasses = "bg-gray-800/80 border-gray-700 text-gray-400 opacity-40 scale-95";
+                      }
+                    }
+
+                    return (
+                      <motion.div
+                        key={choice}
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className={`relative flex items-center justify-center p-5 md:p-6 rounded-2xl border-4 transition-all duration-500 text-center ${cardClasses} ${displayStatus === 'time_up' ? 'grayscale' : ''}`}
+                      >
+                        {showReveal && isRealUnit && (
+                          <span className="absolute -top-3.5 rounded-full border-2 border-green-200 bg-green-500 px-3 py-0.5 text-xs font-paytone uppercase text-white shadow-lg">
+                            ✓ Vraie unité
+                          </span>
+                        )}
+                        <span className="text-xl md:text-2xl font-paytone drop-shadow-md break-words">{choice}</span>
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+              </div>
             </div>
           )
         )}
