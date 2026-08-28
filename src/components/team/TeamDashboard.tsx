@@ -544,7 +544,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
     );
   }
 
-  // Formulaire de réponse (Phase 1, 2, ou 3 : Saisie du nom + indices d'unités de vie)
+  // Formulaire de réponse (Phase 1, 2, ou 3 : Saisie du nom + indices de Maisons)
   return (
     <div className="flex flex-col items-center justify-center w-full min-h-screen p-4 text-center">
       
@@ -563,12 +563,12 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
         </div>
       )}
 
-      {/* Indices : Unités de vie (Phases 1 et 2) ou Info Phase 3 */}
+      {/* Indices : Maisons (Phases 1 et 2) ou Info Phase 3 */}
       {(settings.current_phase === 1 || settings.current_phase === 2) && choices.length > 0 && (
         <div className="w-full max-w-md mb-4 bg-black/50 p-4 rounded-2xl border-2 border-yellow-400/40 text-center shadow-lg backdrop-blur-sm">
           <p className="text-xs font-bold uppercase tracking-widest text-yellow-300 mb-2 flex items-center justify-center gap-1.5">
             <span>📍</span>
-            <span>Indices : {choices.length} Unités de vie possibles</span>
+            <span>Indices : {choices.length} Maisons possibles</span>
           </p>
           <div className={`grid gap-2 ${settings.current_phase === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
             {choices.map((unit, idx) => (
@@ -586,7 +586,7 @@ export default function TeamDashboard({ teamId, onLeave }: Props) {
       {settings.current_phase === 3 && (
         <div className="w-full max-w-md mb-4 bg-black/40 p-3 rounded-2xl border border-white/20 text-center shadow-md">
           <p className="text-xs font-bold uppercase tracking-widest text-white/70">
-            🔍 Phase 3 : Aucun indice d'unité (Identification directe)
+            🔍 Phase 3 : Aucun indice de Maison (Identification directe)
           </p>
         </div>
       )}

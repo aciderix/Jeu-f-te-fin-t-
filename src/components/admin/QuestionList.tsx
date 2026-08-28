@@ -111,14 +111,14 @@ export default function QuestionList({ questions, onDelete, loading }: Props) {
                     <p className="text-white text-lg font-bold">{q.correct_answer}</p>
                     {q.unit_name && (
                       <p className="text-yellow-300 text-sm font-semibold mt-1">
-                        📍 Unité réelle : {q.unit_name}
+                        📍 Maison réelle : {q.unit_name}
                       </p>
                     )}
                   </div>
 
                   {!isBonus && q.wrong_answers && q.wrong_answers.length > 0 && (
                     <div className="bg-black/30 rounded p-3 border border-red-500/30">
-                      <span className="text-red-400 font-bold block text-sm uppercase mb-1">Unités de vie leurres (indices)</span>
+                      <span className="text-red-400 font-bold block text-sm uppercase mb-1">Maisons leurres (indices)</span>
                       <p className="text-white/80 text-sm">{q.wrong_answers.join(' • ')}</p>
                     </div>
                   )}

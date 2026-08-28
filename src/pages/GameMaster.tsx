@@ -873,13 +873,13 @@ export default function GameMaster() {
                 </div>
                 {currentQuestion.unit_name && (
                   <div className="pt-2 border-t border-green-500/30">
-                    <span className="block text-yellow-300 text-xs font-bold uppercase tracking-wider">Unité de vie réelle :</span>
+                    <span className="block text-yellow-300 text-xs font-bold uppercase tracking-wider">Maison réelle :</span>
                     <span className="text-lg text-yellow-200 font-semibold">{currentQuestion.unit_name}</span>
                   </div>
                 )}
                 {currentQuestion.wrong_answers && currentQuestion.wrong_answers.length > 0 && (
                   <div className="pt-2 border-t border-green-500/30">
-                    <span className="block text-white/60 text-xs font-bold uppercase tracking-wider">Unités leurres (indices) :</span>
+                    <span className="block text-white/60 text-xs font-bold uppercase tracking-wider">Maisons leurres (indices) :</span>
                     <span className="text-sm text-white/80">{currentQuestion.wrong_answers.join(' • ')}</span>
                   </div>
                 )}

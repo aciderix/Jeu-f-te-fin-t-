@@ -60,8 +60,8 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
           onChange={e => setPhase(Number(e.target.value))} 
           className={`w-full ${isBonus ? 'bg-yellow-950/80 border-yellow-500 text-yellow-300' : 'bg-black/80 border-white/30 text-white'} border rounded-lg p-3 outline-none focus:border-blue-500 transition-colors shadow-inner`}
         >
-          <option value={1}>Phase 1 (2 indices : 2 unités de vie possibles)</option>
-          <option value={2}>Phase 2 (4 indices : 4 unités de vie possibles)</option>
+          <option value={1}>Phase 1 (2 indices : 2 Maisons possibles)</option>
+          <option value={2}>Phase 2 (4 indices : 4 Maisons possibles)</option>
           <option value={3}>Phase 3 (Sans indice : identification directe)</option>
           <option value={0}>⚡ Manche Bonus / Mort Subite (Buzzer & validation orale)</option>
         </select>
@@ -71,9 +71,9 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
           </p>
         ) : (
           <p className="text-xs text-white/60 mt-1">
-            {phase === 1 && "💡 Les chefs d'équipe écriront le nom de la personne, aidés par 2 unités de vie affichées comme indices (1 vraie + 1 fausse)."}
-            {phase === 2 && "💡 Les chefs d'équipe écriront le nom de la personne, aidés par 4 unités de vie affichées comme indices (1 vraie + 3 fausses)."}
-            {phase === 3 && "💡 Les chefs d'équipe écriront le nom de la personne directement sans aucun indice d'unité."}
+            {phase === 1 && "💡 Les chefs d'équipe écriront le nom de la personne, aidés par 2 Maisons affichées comme indices (1 vraie + 1 fausse)."}
+            {phase === 2 && "💡 Les chefs d'équipe écriront le nom de la personne, aidés par 4 Maisons affichées comme indices (1 vraie + 3 fausses)."}
+            {phase === 3 && "💡 Les chefs d'équipe écriront le nom de la personne directement sans aucun indice de Maison."}
           </p>
         )}
       </div>
@@ -107,7 +107,7 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
       {!isBonus && (
         <div>
           <label className="block text-white/80 text-sm mb-1 font-bold text-yellow-300">
-            Unité de vie réelle de la personne {phase === 3 ? '(optionnel, affiché lors de la révélation)' : '*'}
+            Maison réelle de la personne {phase === 3 ? '(optionnel, affiché lors de la révélation)' : '*'}
           </label>
           <input 
             type="text" 
@@ -115,7 +115,7 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
             value={unitName} 
             onChange={e => setUnitName(e.target.value)} 
             className="w-full bg-white/10 border border-white/30 rounded-lg p-3 text-white outline-none focus:border-yellow-400 transition-colors shadow-inner" 
-            placeholder="Ex: Unité Les Tournesols (ou Service Cuisine, Administration...)" 
+            placeholder="Ex: Maison Les Tournesols (ou Service Cuisine, Administration...)" 
           />
         </div>
       )}
@@ -124,13 +124,13 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
         <div>
           <label className="block text-white/80 text-sm mb-1 font-bold text-red-300">
             {phase === 1 
-              ? "1 Unité de vie leurre (fausse unité) *" 
-              : "3 Unités de vie leurres (fausses unités, séparées par des virgules) *"}
+              ? "1 Maison leurre (fausse Maison) *" 
+              : "3 Maisons leurres (fausses Maisons, séparées par des virgules) *"}
           </label>
           <p className="text-xs text-white/50 mb-2">
             {phase === 1 
-              ? "Cette unité sera proposée aux côtés de la vraie pour faire 2 indices au total."
-              : "Ces 3 unités seront proposées aux côtés de la vraie pour faire 4 indices au total."}
+              ? "Cette Maison sera proposée aux côtés de la vraie pour faire 2 indices au total."
+              : "Ces 3 Maisons seront proposées aux côtés de la vraie pour faire 4 indices au total."}
           </p>
           <input 
             type="text" 
@@ -138,7 +138,7 @@ export default function QuestionForm({ onAdd, currentCount }: Props) {
             value={wrongAnswersStr} 
             onChange={e => setWrongAnswersStr(e.target.value)} 
             className="w-full bg-white/10 border border-white/30 rounded-lg p-3 text-white outline-none focus:border-red-500 transition-colors shadow-inner" 
-            placeholder={phase === 1 ? "Ex: Unité Les Chênes" : "Ex: Unité Les Chênes, Unité Les Bleuets, Accueil"} 
+            placeholder={phase === 1 ? "Ex: Maison Les Chênes" : "Ex: Maison Les Chênes, Maison Les Bleuets, Accueil"} 
           />
         </div>
       )}

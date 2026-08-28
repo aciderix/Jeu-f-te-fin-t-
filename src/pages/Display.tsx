@@ -954,7 +954,7 @@ export default function Display() {
                              className="inline-flex items-center gap-2 bg-yellow-500/20 border border-yellow-400/60 px-5 py-2 rounded-full text-yellow-300 font-sans font-bold text-sm md:text-lg shadow-lg"
                            >
                              <span>📍</span>
-                             <span>Unité : {activeDisplayQuestion.unit_name}</span>
+                             <span>Maison : {activeDisplayQuestion.unit_name}</span>
                            </motion.div>
                          )}
                        </motion.div>
@@ -1023,13 +1023,13 @@ export default function Display() {
             </p>
           </div>
         ) : (
-          /* MANCHES NORMALES : Indices Unités de vie (Phases 1 et 2) */
+          /* MANCHES NORMALES : Indices Maisons (Phases 1 et 2) */
           (settings.current_phase === 1 || settings.current_phase === 2) && (
             <div className="w-full max-w-5xl mx-auto flex flex-col gap-4">
               <div className="flex flex-col sm:flex-row items-center justify-between bg-black/50 px-6 py-3 rounded-2xl border border-yellow-400/30 backdrop-blur-sm gap-2">
                 <div className="flex items-center gap-2 text-yellow-300 font-paytone text-lg md:text-xl uppercase tracking-wider">
                   <span>📍</span>
-                  <span>INDICES : {choices.length} UNITÉS DE VIE POSSIBLES</span>
+                  <span>INDICES : {choices.length} MAISONS POSSIBLES</span>
                 </div>
                 <div className="text-white/80 font-sans font-bold text-sm md:text-base">
                   {liveAnswers.length} / {teams.length} réponses envoyées
@@ -1061,7 +1061,7 @@ export default function Display() {
                       >
                         {showReveal && isRealUnit && (
                           <span className="absolute -top-3.5 rounded-full border-2 border-green-200 bg-green-500 px-3 py-0.5 text-xs font-paytone uppercase text-white shadow-lg">
-                            ✓ Vraie unité
+                            ✓ Vraie Maison
                           </span>
                         )}
                         <span className="text-xl md:text-2xl font-paytone drop-shadow-md break-words">{choice}</span>
