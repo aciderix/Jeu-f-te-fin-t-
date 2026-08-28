@@ -5,7 +5,6 @@ export type GameSequenceState =
   | 'round_intro'
   | 'active'
   | 'reveal'
-  | 'reveal_exit'
   | 'phase_summary'
   | 'tie_breaker'
   | 'finale';

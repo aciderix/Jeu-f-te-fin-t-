@@ -59,7 +59,7 @@ export default function GameMaster() {
 
     // Un seul ordre, horodaté dans Supabase : tous les écrans observent exactement
     // la même séquence et savent quand la question devient réellement active.
-    const { error } = await supabase.from('game_settings').update({
+    await supabase.from('game_settings').update({
       ...updates,
       is_playing: true,
       show_results: false,
@@ -68,7 +68,15 @@ export default function GameMaster() {
       question_started_at: new Date(now + delay).toISOString(),
     }).eq('id', 1);
 
-    if (error) throw error;
+    await supabase.from('tie_breaker_sessions').update({
+      status: 'cancelled',
+      tied_team_ids: [],
+      saved_team_ids: [],
+      failed_team_ids: [],
+      buzzed_team_id: null
+    }).eq('id', 1);
+    
+    setIsProcessing(false);
   };
 
   useEffect(() => {
@@ -190,25 +198,10 @@ export default function GameMaster() {
     setIsProcessing(false);
   };
 
-  // Après le clic de régie, tous les écrans ont un court instant pour jouer
-  // la sortie des cartes de score avant que la prochaine séquence ne démarre.
   const handleNextRound = async () => {
     if (!settings) return;
     setIsProcessing(true);
-
-    const { error } = await supabase.from('game_settings').update({
-      sequence_state: 'reveal_exit',
-      sequence_started_at: new Date().toISOString(),
-    }).eq('id', 1);
-
-    if (error) {
-      setIsProcessing(false);
-      throw error;
-    }
-
-    window.setTimeout(() => {
-      void advanceToNextRound();
-    }, 1_100);
+    await advanceToNextRound();
   };
 
   // Passer à la manche suivante ou détecter la fin de phase

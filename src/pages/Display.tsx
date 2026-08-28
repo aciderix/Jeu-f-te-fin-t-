@@ -11,7 +11,7 @@ import { useTieBreakerSession } from '../hooks/useTieBreakerSession';
 import { getDeterministicChoices, isAnswerCorrect } from '../lib/utils';
 import { GameSequenceState, SEQUENCE_DURATIONS } from '../lib/gameSequence';
 
-type RoundStatus = 'intro' | 'active' | 'time_up' | 'reveal' | 'reveal_exit' | 'phase_summary' | 'finale' | 'tie_breaker' | 'waiting_start';
+type RoundStatus = 'intro' | 'active' | 'time_up' | 'reveal' | 'phase_summary' | 'finale' | 'tie_breaker' | 'waiting_start';
 
 interface ScoreCountUpProps {
   start: number;
@@ -209,7 +209,6 @@ export default function Display() {
     active: 'EN JEU',
     time_up: 'TEMPS ÉCOULÉ',
     reveal: 'RÉVÉLATION',
-    reveal_exit: 'RÉVÉLATION',
     phase_summary: 'FIN DE PHASE',
     finale: 'GRANDE FINALE',
     tie_breaker: 'DÉPARTAGE EN COURS',
@@ -276,12 +275,6 @@ export default function Display() {
   // Le passage à phase_summary ne se fait plus automatiquement.
   // Il est déclenché par un état explicite 'phase_summary' enregistré dans game_settings,
   // ou en déduisant que is_playing est false alors qu'on vient de terminer une phase.
-  useEffect(() => {
-    if (isPhaseEnd && settings?.show_results && settings?.is_playing === false && !settings?.tie_breaker_mode && settings?.current_phase < 4) {
-      setRoundStatus('phase_summary');
-    }
-  }, [isPhaseEnd, settings?.show_results, settings?.is_playing, settings?.tie_breaker_mode, settings?.current_phase]);
-
   useEffect(() => {
     if (!settings?.is_playing || !currentQuestion || settings.tie_breaker_mode) return;
     // Le son de nouvelle manche est désormais géré par les séquences de transition.
@@ -943,7 +936,7 @@ export default function Display() {
                     )}
                     
                     {/* Overlay de Révélation (Phase 3 texte en fin de manche) */}
-                    {!isTieBreaker && (displayStatus === 'reveal' || displayStatus === 'reveal_exit') && activeDisplayQuestion && (
+                    {!isTieBreaker && displayStatus === 'reveal' && activeDisplayQuestion && (
                        <motion.div 
                          initial={{ opacity: 0, scale: 1.05 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }}
                          className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center backdrop-blur-sm"
@@ -1025,7 +1018,7 @@ export default function Display() {
               <AnimatePresence>
                 {choices.map((choice) => {
                   const isCorrect = choice === currentQuestion?.correct_answer;
-                  const showReveal = displayStatus === 'reveal' || displayStatus === 'reveal_exit';
+                  const showReveal = displayStatus === 'reveal';
                   
                   let btnClasses = "bg-blue-900/80 border-blue-500 text-white shadow-[0_8px_0_rgb(30,58,138)]";
                   
@@ -1060,16 +1053,12 @@ export default function Display() {
         
       </div>
 
-      {!isTieBreaker && (displayStatus === 'reveal' || displayStatus === 'reveal_exit') && (
+      {!isTieBreaker && displayStatus === 'reveal' && (
         <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center px-6">
           <motion.div
             initial={{ opacity: 0, scale: 0.72, y: 30 }}
-            animate={displayStatus === 'reveal'
-              ? { opacity: 1, scale: 1, y: 0 }
-              : { opacity: 0, scale: 0.62, y: 30 }}
-            transition={displayStatus === 'reveal'
-              ? { type: 'spring', stiffness: 340, damping: 19, delay: Math.max(0, 2.85 - revealElapsedSeconds) }
-              : { duration: 0.9, ease: 'easeIn' }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ type: 'spring', stiffness: 340, damping: 19, delay: Math.max(0, 2.85 - revealElapsedSeconds) }}
             className="w-full max-w-6xl rounded-[2.5rem] border-4 border-yellow-400 bg-black/78 p-5 shadow-[0_0_70px_rgba(0,0,0,0.7)] backdrop-blur-md md:p-8"
           >
             <p className="mb-5 text-center text-xs font-bold uppercase tracking-[0.35em] text-yellow-300 md:mb-7">
