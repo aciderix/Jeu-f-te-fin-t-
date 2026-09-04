@@ -46,6 +46,7 @@ export interface Question {
   unit_name?: string; // Maison ou service d'appartenance (ex: "Maison Les Tournesols")
   wrong_answers: string[]; // Maisons ou services leurres (pour composer les indices)
   is_bonus?: boolean;
+  is_played?: boolean; // Marqueur pour indiquer si la question bonus a déjà été trouvée
 }
 
 export interface LiveAnswer {

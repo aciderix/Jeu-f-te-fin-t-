@@ -92,9 +92,14 @@ export default function QuestionList({ questions, onDelete, loading }: Props) {
                 <div className="flex-grow w-full">
                   <div className="flex flex-wrap items-center gap-2 mb-2">
                     {isBonus ? (
-                      <span className="bg-yellow-500 text-black text-xs px-3 py-1 rounded-full font-bold uppercase tracking-wider">
-                        ⚡ Manche Bonus (Buzzer)
-                      </span>
+                      <>
+                        <span className="bg-yellow-500 text-black text-xs px-3 py-1 rounded-full font-bold uppercase tracking-wider">
+                          ⚡ Manche Bonus (Buzzer)
+                        </span>
+                        <span className={`text-xs px-3 py-1 rounded-full font-bold uppercase tracking-wider text-white ${q.is_played ? 'bg-red-600/80 border border-red-500' : 'bg-green-600/80 border border-green-500'}`}>
+                          {q.is_played ? '✓ Déjà Jouée' : '★ Inédite'}
+                        </span>
+                      </>
                     ) : (
                       <>
                         <span className="bg-blue-600 text-xs px-3 py-1 rounded-full font-bold uppercase tracking-wider text-white">Phase {q.phase}</span>

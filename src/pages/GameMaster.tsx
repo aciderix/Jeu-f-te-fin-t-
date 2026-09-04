@@ -297,15 +297,25 @@ export default function GameMaster() {
     setIsProcessing(false);
   };
 
+  // Obtenir une question bonus aléatoire non jouée
+  const getRandomBonusQuestion = (excludeId?: string) => {
+    const unplayedBonusQs = bonusQuestions.filter(q => !q.is_played && q.id !== excludeId);
+    if (unplayedBonusQs.length > 0) {
+      return unplayedBonusQs[Math.floor(Math.random() * unplayedBonusQs.length)];
+    }
+    const otherBonusQs = bonusQuestions.filter(q => q.id !== excludeId);
+    return otherBonusQs.length > 0 ? otherBonusQs[Math.floor(Math.random() * otherBonusQs.length)] : (bonusQuestions[0] || null);
+  };
+
   // Lancer le départage au buzzer
   const handleLaunchTieBreaker = async () => {
     setShowPhaseEndModal(false);
     setIsProcessing(true);
 
-    const bonusQ = bonusQuestions[0] || null;
+    const bonusQ = getRandomBonusQuestion();
     const tiedIds = tiedTeams.map(t => t.id);
 
-    setBonusQuestionIndex(0);
+    setBonusQuestionIndex(bonusQuestions.findIndex(q => q.id === bonusQ?.id) || 0);
     setFailedTeamIds([]);
     setSavedTeamIds([]);
     setBuzzedTeamId(null);
@@ -351,12 +361,12 @@ export default function GameMaster() {
   const handleManualTieBreakerStart = async () => {
     setIsProcessing(true);
     const activeTeamsList = teams.filter(t => !t.is_eliminated).sort((a, b) => b.score - a.score);
-    const bonusQ = bonusQuestions[0] || null;
+    const bonusQ = getRandomBonusQuestion();
     const tiedIds = activeTeamsList.map(t => t.id);
 
     setTiedTeams(activeTeamsList);
     setTargetSpots(1);
-    setBonusQuestionIndex(0);
+    setBonusQuestionIndex(bonusQuestions.findIndex(q => q.id === bonusQ?.id) || 0);
     setFailedTeamIds([]);
     setSavedTeamIds([]);
     setBuzzedTeamId(null);
@@ -425,6 +435,11 @@ export default function GameMaster() {
       failed_team_ids: [],
       buzzed_team_id: null
     }).eq('id', 1);
+
+    // Marquer la question bonus comme jouée
+    if (persistedSession?.question_id) {
+      await supabase.from('questions').update({ is_played: true }).eq('id', persistedSession.question_id);
+    }
 
     // Vérifier si le départage est terminé
     const remainingToEliminate = persistedTiedIds.length - persistedTargetSpots;
@@ -523,14 +538,12 @@ export default function GameMaster() {
 
   // Passer à la photo bonus suivante
   const handleNextBonusQuestion = async () => {
-    const persistedIndex = bonusQuestions.findIndex(question => question.id === tieBreakerSession.question_id);
-    const currentIndex = persistedIndex >= 0 ? persistedIndex : bonusQuestionIndex;
-    const nextIndex = (currentIndex + 1) % (bonusQuestions.length || 1);
-    setBonusQuestionIndex(nextIndex);
+    const nextBonusQ = getRandomBonusQuestion(tieBreakerSession.question_id || undefined);
+    
+    setBonusQuestionIndex(bonusQuestions.findIndex(q => q.id === nextBonusQ?.id) || 0);
     setFailedTeamIds([]);
     setBuzzedTeamId(null);
 
-    const nextBonusQ = bonusQuestions[nextIndex] || null;
     await supabase.from('tie_breaker_sessions').update({
       question_id: nextBonusQ?.id || null,
       failed_team_ids: [],
